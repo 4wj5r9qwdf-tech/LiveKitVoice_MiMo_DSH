@@ -57,7 +57,7 @@ LiveKitVoice/
 | VAD | silero（livekit 内置推理） | 语音活动检测，`min_silence_duration=1.0s`、打断 `min_duration=1.5s`（详见「语音交互行为」一节） |
 | 耳朵（STT） | MiMo `mimo-v2.5-asr`（OpenAI 兼容 `/chat/completions`，WAV base64 进 content） | 非流式，按 VAD 切句 |
 | 嘴巴（TTS） | MiMo `mimo-v2.5-tts`（同端点，assistant content 进文本，流式 base64 PCM16 @ 24kHz 出） | 200ms 预缓冲 + 20ms 帧；长回复按句拆成 ≤150 字符逐段合成再拼接（`TTS_CHUNK_LIMIT`），避免单次请求被截断 |
-| 大脑（LLM） | DeepSeek Harness 会话（默认） | 经 `dsh-voice-bridge` HTTP/SSE 桥；可回退任意 OpenAI 兼容 LLM |
+| 大脑（LLM） | DeepSeek Harness 会话（默认） | 经 `dsh-voice-bridge` HTTP/SSE 桥；**模型不固定在本项目**，跟随 DSH 会话当前 Provider 配置（DSH 设置里换什么模型就用什么）。可回退任意 OpenAI 兼容 LLM |
 | 桥插件 | DSH Cordis Host 插件（Node ESM，注入 `webServer`/`sessionController`/`slots`） | 仅 loopback + token 鉴权 |
 | 界面 | Next.js 15.5 + React 19 + pnpm（LiveKit Agents Playground 定制） | `livekit-client` 2.18 |
 
@@ -94,7 +94,7 @@ LiveKitVoice/
 | `DSH_VOICE_URL` | `http://127.0.0.1:3081` | DSH 桥地址；管理器拉起的 Worker 会自动注入当前端口，手跑时按实际 host 端口改 |
 | `DSH_VOICE_TOKEN` | 空 | 必须与插件 `cordis.patch.yml` 的 `config.token` 一致；`LLM_PROVIDER=dsh` 时必填 |
 | `DSH_VOICE_CWD` | 项目根 | 未绑定会话时自动创建隔离 DSH 会话用的工作目录 |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | MiMo key / `https://apihub.agnes-ai.com/v1` / 代码默认 `mimo-v2.6-flash`（`.env` 模板填 `agnes-2.5-flash`） | 仅 openai 回退模式使用 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | MiMo key / `https://apihub.agnes-ai.com/v1` / 代码默认 `mimo-v2.6-flash`（`.env` 模板填 `agnes-2.5-flash`） | **仅** openai 回退模式使用；DSH 模式下完全不读取（模型跟随 DSH 会话配置） |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | `ws://127.0.0.1:7880` / `devkey` / 见 `livekit-server/keys.txt` | 必须与 LiveKit 服务器一致 |
 
 ### DSH 插件 `cordis.patch.yml`（桌面 profile）
@@ -126,6 +126,9 @@ LiveKitVoice/
 - **大脑**：语音桥把转写文本 prompt 进 DSH 会话，由 DSH 的 Agent 处理。用户在 DSH 的
   模型 Provider 设置里配好自己的模型（DSH 的 Custom Model API 支持任意 OpenAI 兼容
   端点：base URL + API key + 模型名），语音链路自动继承——插件侧没有任何模型配置。
+  **大脑模型不固定**：DSH 会话当前用什么模型（deepseek / mimo / agnes / 任意自定义
+  端点），语音对话就用什么模型；在 DSH 设置里切换即刻生效，本项目不用改任何东西。
+  `.env` 的 `LLM_MODEL` 等变量在 DSH 模式下**完全不参与**（它们只属于下面的回退模式）。
 - **耳朵/嘴巴**：STT/TTS 走 MiMo 的 `/chat/completions`（音频 base64 进、TTS 文本进
   assistant content），只需配 `MIMO_API_KEY`。换其他厂商的 ASR/TTS 需要替换
   `voice_agent.py` 里的 `MiMoSTT` / `MiMoTTS` 两个适配器（实现 LiveKit 的

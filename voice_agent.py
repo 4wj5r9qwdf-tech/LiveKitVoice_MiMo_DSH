@@ -408,7 +408,9 @@ class DSHLLM(LLM):
 
     @property
     def model(self) -> str:
-        return "agnes-2.5-flash"
+        # 仅是 LiveKit 侧的展示标签。DSH 模式下真实大脑模型不固定在本项目：
+        # 它跟随 DSH 会话当前 Provider 配置（DSH 设置里换什么模型这里就是什么）。
+        return "dsh-session"
 
     @property
     def provider(self) -> str:
