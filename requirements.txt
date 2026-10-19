@@ -1,0 +1,5 @@
+# Voice worker dependencies (verified on Python 3.12, livekit-agents 1.8.8)
+livekit-agents==1.8.8
+livekit-plugins-openai==1.8.8
+httpx>=0.28
+python-dotenv>=1.0

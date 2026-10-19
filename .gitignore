@@ -1,0 +1,20 @@
+# 敏感信息（真实 key 只留在本地 .env / livekit-server 密钥文件）
+.env
+agents-playground/.env.local
+livekit-server/keys.txt
+livekit-server/secret.txt
+memory.json
+
+# 大二进制（建议走 Releases / LFS，或直接提供下载链接）
+livekit-server/livekit-server.exe
+livekit-server/livekit.zip
+
+# 运行产物
+logs/
+__pycache__/
+.venv/
+agents-playground/.next/
+agents-playground/tsconfig.tsbuildinfo
+
+# Playground 上游（livekit/agents-playground）的历史，本地保留不上传
+agents-playground/.git-upstream-livekit/

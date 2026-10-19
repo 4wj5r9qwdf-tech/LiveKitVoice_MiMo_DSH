@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "LiveKit Voice Bridge",
+    "description": "Bridges a LiveKit voice session to a DeepSeek Harness session."
+  }
+}

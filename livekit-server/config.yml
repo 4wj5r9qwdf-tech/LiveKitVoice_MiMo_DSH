@@ -1,0 +1,7 @@
+port: 7880
+
+keys:
+  devkey: kq6tJ0dG4jRZsBp2aXv9mWc3eLd1fNn8qHr5sTu7yV
+
+logging:
+  level: info

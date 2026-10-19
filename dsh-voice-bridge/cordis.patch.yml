@@ -1,0 +1,14 @@
+- insert:
+    - id: dsh-voice-bridge
+      name: '@local/dsh-voice-bridge'
+      config:
+        projectRoot: 'F:/LiveKitVoice'
+        livekitServer: 'F:/LiveKitVoice/livekit-server/livekit-server.exe'
+        livekitConfig: 'F:/LiveKitVoice/livekit-server/config.yml'
+        python: 'F:/LiveKitVoice/.venv/Scripts/python.exe'
+        worker: 'F:/LiveKitVoice/voice_agent.py'
+        playground: 'F:/LiveKitVoice/agents-playground'
+        playgroundUrl: 'http://127.0.0.1:3000/'
+        livekitPort: 7880
+        playgroundPort: 3000
+        npmCommand: 'C:/Program Files/nodejs/npm.cmd'
