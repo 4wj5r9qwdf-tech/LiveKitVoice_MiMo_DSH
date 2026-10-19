@@ -30,7 +30,7 @@ flowchart LR
 ```
 LiveKitVoice/
 ├── voice_agent.py            # LiveKit Agents 语音 Worker（STT/TTS/LLM 适配 + 工具）
-├── memory.json               # 非 DSH 模式下的本地记忆（remember_fact 工具写入）
+├── memory.json               # 非 DSH 模式下的本地记忆（remember_fact 工具写入，按需生成）
 ├── agent_workspace/          # write_code / run_script 工具的唯一可写目录
 ├── .env / .env.example       # Worker 与 Playground 的环境配置（模板见 .env.example）
 ├── livekit-server/           # 本地 LiveKit 服务器（Windows 二进制 + config.yml + 密钥）
@@ -90,11 +90,11 @@ LiveKitVoice/
 | --- | --- | --- |
 | `MIMO_API_KEY` | 无 | MiMo 的 key，STT/TTS（以及 openai 回退模式下的 LLM）都用它 |
 | `MIMO_BASE_URL` | `https://token-plan-cn.xiaomimimo.com/v1` | MiMo OpenAI 兼容端点 |
-| `LLM_PROVIDER` | `dsh` | `dsh` = 走 DSH 语音桥（推荐）；`openai` = 直连任意 OpenAI 兼容 LLM |
+| `LLM_PROVIDER` | `dsh` | `dsh`（别名 `dsh-voice`、`deepseek-harness`）= 走 DSH 语音桥（推荐）；**其它任意值** = openai 回退模式 |
 | `DSH_VOICE_URL` | `http://127.0.0.1:3081` | DSH 桥地址；管理器拉起的 Worker 会自动注入当前端口，手跑时按实际 host 端口改 |
 | `DSH_VOICE_TOKEN` | 空 | 必须与插件 `cordis.patch.yml` 的 `config.token` 一致；`LLM_PROVIDER=dsh` 时必填 |
 | `DSH_VOICE_CWD` | 项目根 | 未绑定会话时自动创建隔离 DSH 会话用的工作目录 |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | MiMo key / `https://apihub.agnes-ai.com/v1` / `agnes-2.5-flash` | 仅 `LLM_PROVIDER=openai` 回退模式使用 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | MiMo key / `https://apihub.agnes-ai.com/v1` / 代码默认 `mimo-v2.6-flash`（`.env` 模板填 `agnes-2.5-flash`） | 仅 openai 回退模式使用 |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | `ws://127.0.0.1:7880` / `devkey` / 见 `livekit-server/keys.txt` | 必须与 LiveKit 服务器一致 |
 
 ### DSH 插件 `cordis.patch.yml`（桌面 profile）
@@ -152,6 +152,10 @@ LiveKitVoice/
 5. 提示词策略：Worker 会对每轮用户文本追加一句口语化汇报指令（见
    `DSHLLM.format_prompt`）——明确「该调工具正常调，最后口头汇报才要简短无
    Markdown」，避免语音风格指令压制 DSH 侧的工具执行。
+6. 开场问候：房间连上后 `VoiceBridgeAgent.on_enter` 会向该会话发一条固定 prompt
+   （「请向用户打个招呼，简短问下对方今天怎么样，然后等用户说话。」）触发首次回复，
+   这条会以用户消息的形式留在 DSH 会话记录里；`format_prompt` 对它原样放行、
+   不追加口语化指令。
 
 ## 语音交互行为（回合、灵敏度、打断）
 
@@ -227,7 +231,8 @@ LiveKitVoice/
   保持运行，声音继续；
 - 记忆：位置/尺寸存 `localStorage`（`dsh-voice-popup-pos` / `dsh-voice-popup-size`）；
 - 自动连接：iframe 带 `dshSessionId` 时 Playground 自动 `session.start()`，
-  无需手动点 Connect（`agents-playground/src/pages/index.tsx`）。
+  无需手动点 Connect（`agents-playground/src/pages/index.tsx`）；也可以
+  手动在 URL 加 `?auto=1` 强制自动连接。
 
 ## 语音桥 HTTP 接口（摘要）
 

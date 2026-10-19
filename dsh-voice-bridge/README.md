@@ -7,6 +7,15 @@ opens a compact `shell.overlay` popup in DSH itself; the popup embeds the
 Playground for the selected Session and does not require opening a separate
 browser window or right-side Browser pane.
 
+The popup is a small windowed panel: drag it by the title bar (works in both
+expanded and minimized states), resize it from the 28px corner grip or the
+bottom edge strip, and minimize it to a 180x44 bar — the embedded Playground
+stays mounted, so the LiveKit connection and the in-room agent keep running
+while minimized. Position and size persist in `localStorage`. Opening the panel
+auto-connects the Playground to the room (the `dshSessionId` query parameter
+enables `autoConnect`), so no manual Connect click is needed. See the root
+README's popup/interaction sections for details.
+
 The bridge does not move microphone audio into DeepSeek Harness; the voice
 worker sends final transcript text and receives assistant stream frames.
 DeepSeek Harness owns the model session, tools, approvals, and tool results.
