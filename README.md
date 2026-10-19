@@ -1,7 +1,7 @@
 # LiveKitVoice — 实时语音对话系统（LiveKit + MiMo + DeepSeek Harness 语音桥插件）
 
 一个跑在本机（Windows 优先验证）的实时语音对话系统：
-基于LiveKit打造，适配了MiMo的语音合成和语音识别模型后做成的DSH插件。
+基于 [LiveKit](https://livekit.io) 打造，适配了 MiMo 的语音合成与语音识别模型后做成的 DSH 插件。
 
 - **耳朵和嘴巴**：LiveKit WebRTC 音频链路 + 小米 MiMo 的 ASR / TTS（OpenAI 兼容端点）。
 - **大脑**：DeepSeek Harness（DSH）会话本身——工具调用、代码执行、审批、记忆、会话历史全部由 DSH 承担。
@@ -278,3 +278,10 @@ LiveKitVoice/
   方案边界、DSH 接口（prompt/cancel/follow）与协议草案。
 - `framework-comparison.md`：OpenClaw / Hermes / DeepSeek Harness 三个框架对照，
   以及「保留 LiveKit+MiMo 语音壳、DSH 做工具内核」的决策依据。
+
+## 来源与致谢
+
+- **[LiveKit](https://github.com/livekit/livekit)** 与 **[LiveKit Agents](https://github.com/livekit/agents)**：实时音视频（WebRTC）传输与 Agent 框架，本项目的声音链路全部构建其上（Apache-2.0）。
+- **[livekit/agents-playground](https://github.com/livekit/agents-playground)**：本仓库 `agents-playground/` 的上游，基于官方 Playground 定制，其 `LICENSE` / `NOTICE` 原样保留（Apache-2.0）。
+- **[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)**：语音对话的「大脑」——会话、工具调用、审批与记忆内核（MIT）。
+- **MiMo（小米）**：语音识别（ASR）与语音合成（TTS）模型，经 OpenAI 兼容端点调用。
