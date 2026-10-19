@@ -1,6 +1,7 @@
 # LiveKitVoice — 实时语音对话系统（LiveKit + MiMo + DeepSeek Harness 语音桥插件）
 
 一个跑在本机（Windows 优先验证）的实时语音对话系统：
+基于LiveKit打造，适配了MiMo的语音合成和语音识别模型后做成的DSH插件。
 
 - **耳朵和嘴巴**：LiveKit WebRTC 音频链路 + 小米 MiMo 的 ASR / TTS（OpenAI 兼容端点）。
 - **大脑**：DeepSeek Harness（DSH）会话本身——工具调用、代码执行、审批、记忆、会话历史全部由 DSH 承担。
