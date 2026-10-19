@@ -1,4 +1,4 @@
-# LiveKitVoice — 实时语音对话系统（LiveKit + MiMo + DeepSeek Harness 语音桥）
+# LiveKitVoice — 实时语音对话系统（LiveKit + MiMo + DeepSeek Harness 语音桥插件）
 
 一个跑在本机（Windows 优先验证）的实时语音对话系统：
 
