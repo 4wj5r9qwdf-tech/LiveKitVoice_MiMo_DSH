@@ -364,6 +364,43 @@ export default function Playground({
     agent.internal.agentParticipant,
   ]);
 
+  // DSH voice companion: when this playground is embedded in the DSH voice
+  // popup, report the agent state + the latest assistant text to the embedding
+  // page (the fish-ball speech bubble reads it via postMessage). No-op when
+  // the playground is used standalone in a browser tab.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.parent || window.parent === window) return;
+    const post = () => {
+      try {
+        const items = messages.messages;
+        // Find the most recent agent-spoken transcript (not the user's own
+        // words) for the bubble subtitle.
+        let text = "";
+        for (let i = items.length - 1; i >= 0; i -= 1) {
+          const m = items[i];
+          if (m.type === "agentTranscript") {
+            text = String(m.message ?? "").slice(-120);
+            break;
+          }
+        }
+        window.parent.postMessage(
+          {
+            type: "dsh-voice-status",
+            status: agent.state,
+            text,
+          },
+          "*",
+        );
+      } catch {
+        /* embedded posting unavailable */
+      }
+    };
+    post();
+    const timer = setInterval(post, 1000);
+    return () => clearInterval(timer);
+  }, [agent.state, messages.messages]);
+
   const handleAttributesChange = useCallback(
     (newAttributes: AttributeItem[]) => {
       // Store the full array with stable IDs to preserve attributes during editing

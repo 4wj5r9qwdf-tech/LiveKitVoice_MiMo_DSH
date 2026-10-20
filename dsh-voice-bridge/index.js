@@ -1,7 +1,9 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
-import { resolve } from "node:path";
+import { createReadStream } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const name = "dsh-voice-bridge";
 export const inject = ["webServer", "sessionController"];
@@ -9,6 +11,14 @@ export const inject = ["webServer", "sessionController"];
 const MAX_BODY_BYTES = 64 * 1024;
 const FLOW_CONTROL_BYTES = 1024;
 const RUNTIME_LOG_LIMIT = 200;
+// Avatar (merged from dsh-whale-widget's "big fat fish" role image): served by
+// GET /voice/avatar.png. Lives in the plugin's own assets/ folder so the
+// client popup can display it without any external dependency.
+const AVATAR_FILE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "assets",
+  "voice-avatar.png",
+);
 
 function defaultRuntimeConfig(config = {}) {
   return {
@@ -119,25 +129,50 @@ function createRuntimeManager(config) {
 
   const startOne = (name, command, args, cwd, spawnOptions = {}) => {
     if (children.has(name)) return;
-    const child = spawn(command, args, {
+    const baseOptions = {
       cwd,
       env: process.env,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       ...spawnOptions,
-    });
-    child.stdout.on("data", (chunk) => appendLog(`${name}:out`, chunk));
-    child.stderr.on("data", (chunk) => appendLog(`${name}:err`, chunk));
-    child.once("exit", (code, signal) => {
-      children.delete(name);
-      appendLog(`${name}:exit`, `${signal || code}`);
-      if (phase === "running" && code !== 0 && signal !== "SIGTERM") {
-        phase = "error";
-        lastError = `${name} exited with ${signal || code}`;
+    };
+    const spawnWith = (stdio) => {
+      let child;
+      try {
+        child = spawn(command, args, { ...baseOptions, stdio });
+      } catch (error) {
+        appendLog(`${name}:spawn-error`, `${error.message}`);
+        // Host runs under a sandbox that blocks piped stdio: retry without
+        // capturing the child's output (logs degrade, services still start).
+        if (stdio !== "ignore" && /EPERM|EACCES/i.test(String(error.code || error.message))) {
+          spawnWith("ignore");
+        } else {
+          phase = "error";
+          lastError = `${name} spawn failed: ${error.message}`;
+        }
+        return;
       }
-    });
-    children.set(name, child);
+      if (child.stdout) child.stdout.on("data", (chunk) => appendLog(`${name}:out`, chunk));
+      if (child.stderr) child.stderr.on("data", (chunk) => appendLog(`${name}:err`, chunk));
+      child.once("error", (error) => {
+        children.delete(name);
+        appendLog(`${name}:spawn-error`, `${error.message}`);
+        if (stdio !== "ignore" && /EPERM|EACCES/i.test(String(error.code || error.message))) {
+          spawnWith("ignore");
+        }
+      });
+      child.once("exit", (code, signal) => {
+        children.delete(name);
+        appendLog(`${name}:exit`, `${signal || code}`);
+        if (phase === "running" && code !== 0 && signal !== "SIGTERM") {
+          phase = "error";
+          lastError = `${name} exited with ${signal || code}`;
+        }
+      });
+      children.set(name, child);
+    };
+    spawnWith(baseOptions.stdio);
   };
 
   const start = async (baseUrl = "") => {
@@ -383,6 +418,31 @@ export function apply(ctx, config) {
           "/voice/runtime/stop",
         ],
       });
+    },
+  });
+
+  const avatar = ctx.webServer.register({
+    kind: "exact",
+    path: "/voice/avatar.png",
+    handler: (req, res) => {
+      if (!requireLocal(req, res)) return;
+      let stream;
+      try {
+        stream = createReadStream(AVATAR_FILE);
+      } catch (error) {
+        sendJson(res, 404, { error: "avatar not found" });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "no-store",
+      });
+      stream.on("error", () => {
+        try {
+          res.end();
+        } catch (error) {}
+      });
+      stream.pipe(res);
     },
   });
 
