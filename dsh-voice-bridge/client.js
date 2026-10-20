@@ -465,8 +465,9 @@ window.__ModuleLoader__.load({
       var BUBBLE_W = 230;
       var bubbleLeft = fish.x + size / 2 - BUBBLE_W / 2;
       bubbleLeft = Math.max(8, Math.min(bubbleLeft, window.innerWidth - BUBBLE_W - 8));
-      var bubbleTop = fish.y - 92;
-      if (bubbleTop < 8) bubbleTop = fish.y + size + 10;
+      // 气泡底边锚在角色头顶上方 10px：无论几行都不会被角色遮挡；
+      // 角色太靠上时翻到角色下方。
+      var bubbleAbove = fish.y > 140;
 
       var bubble =
         bubbleLines.length > 0
@@ -478,7 +479,8 @@ window.__ModuleLoader__.load({
                 style: {
                   position: "absolute",
                   left: bubbleLeft + "px",
-                  top: bubbleTop + "px",
+                  top: bubbleAbove ? "auto" : fish.y + size + 10 + "px",
+                  bottom: bubbleAbove ? window.innerHeight - fish.y + 10 + "px" : "auto",
                   width: BUBBLE_W + "px",
                   maxWidth: "calc(100vw - 24px)",
                   background: "#fff",
@@ -492,7 +494,7 @@ window.__ModuleLoader__.load({
                   pointerEvents: "none",
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
-                  zIndex: 3,
+                  zIndex: 5,
                 },
               },
               bubbleLines.join("\n"),
