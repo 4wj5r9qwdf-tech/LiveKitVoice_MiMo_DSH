@@ -8,17 +8,15 @@ window.__ModuleLoader__.load({
     var DEFAULT_URL = "http://127.0.0.1:3000/";
     var OPEN_EVENT = "dsh-voice-popup-open";
     var STATUS_EVENT = "dsh-voice-status";
-    var POS_KEY = "dsh-voice-popup-pos";
-    var SIZE_KEY = "dsh-voice-popup-size";
     var FISH_POS_KEY = "dsh-voice-fish-pos";
     var BUBBLE_KEY = "dsh-voice-bubble";
-    var MINW = 320, MINH = 380;
     var AVATAR_SRC = "/voice/avatar.png";
     var BUBBLE_DEFAULTS = {
       showStatus: true,
       showText: true,
       showBalance: true,
-      fishSize: 72,
+      alwaysBubble: false,
+      fishSize: 120,
       avatar: "",
     };
 
@@ -41,44 +39,11 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function clampPos(pos, size) {
-      var w = window.innerWidth;
-      var h = window.innerHeight;
-      var x = Math.round(pos.x || 0);
-      var y = Math.round(pos.y || 0);
-      x = Math.max(0, Math.min(x, Math.max(0, w - 120)));
-      y = Math.max(0, Math.min(y, Math.max(0, h - 48)));
-      return { x: x, y: y };
-    }
-
-    function defaultSize() {
-      return {
-        width: Math.min(460, window.innerWidth - 32),
-        height: Math.min(640, window.innerHeight - 40),
-      };
-    }
-
-    function clampedSize(size) {
-      var w = window.innerWidth;
-      var h = window.innerHeight;
-      return {
-        width: Math.max(MINW, Math.min(Math.round(size.width || 460), w - 16)),
-        height: Math.max(MINH, Math.min(Math.round(size.height || 640), h - 16)),
-      };
-    }
-
-    function defaultPos(size) {
-      return {
-        x: Math.max(8, Math.round(window.innerWidth - size.width - 20)),
-        y: Math.max(8, Math.round(window.innerHeight - size.height - 20)),
-      };
-    }
-
     function defaultFishPos(size) {
-      var s = Number(size) || 72;
+      var s = Number(size) || 120;
       return {
-        x: Math.max(8, Math.round(window.innerWidth - s - 24)),
-        y: Math.max(8, Math.round(window.innerHeight - s - 24)),
+        x: Math.max(8, Math.round(window.innerWidth - s - 28)),
+        y: Math.max(8, Math.round(window.innerHeight - s - 28)),
       };
     }
 
@@ -204,20 +169,25 @@ window.__ModuleLoader__.load({
     }
 
     function VoicePopup() {
-      var uiHook = React.useState({ open: false, sessionId: "", view: "fish" });
+      var uiHook = React.useState({ open: false, sessionId: "" });
       var ui = uiHook[0];
       var setUi = uiHook[1];
 
       var settingsHook = React.useState(function () {
-        var s = Object.assign({}, BUBBLE_DEFAULTS, loadJSON(BUBBLE_KEY, {}));
-        s.fishSize = Math.max(56, Math.min(120, Number(s.fishSize) || 72));
+        var saved = loadJSON(BUBBLE_KEY, {});
+        var isLegacy = !saved || saved.alwaysBubble === undefined; // 旧版（小圆头像）存的配置
+        var s = Object.assign({}, BUBBLE_DEFAULTS, saved || {});
+        s.fishSize = Math.max(64, Math.min(200, Number(s.fishSize) || 120));
+        // One-time migration: legacy 72px settings get the new larger default.
+        if (isLegacy) s.fishSize = 120;
         return s;
       });
       var settings = settingsHook[0];
       var setSettings = settingsHook[1];
 
       var fishPosHook = React.useState(function () {
-        return loadJSON(FISH_POS_KEY, null);
+        var saved = loadJSON(FISH_POS_KEY, null);
+        return saved && typeof saved.x === "number" ? saved : null;
       });
       var fishPos = fishPosHook[0];
       var setFishPos = fishPosHook[1];
@@ -230,145 +200,38 @@ window.__ModuleLoader__.load({
       var balance = balanceHook[0];
       var setBalance = balanceHook[1];
 
-      var settingsOpenHook = React.useState(false);
-      var settingsOpen = settingsOpenHook[0];
-      var setSettingsOpen = settingsOpenHook[1];
+      var cardOpenHook = React.useState(false);
+      var cardOpen = cardOpenHook[0];
+      var setCardOpen = cardOpenHook[1];
 
-      var layoutHook = React.useState(null);
-      var layout = layoutHook[0];
-      var sectionRef = React.useRef(null);
-      var fishRef = React.useRef(null);
-      var rafRef = React.useRef(0);
-      var layoutRef = React.useRef(null);
+      var cardBusyHook = React.useState(false);
+      var cardBusy = cardBusyHook[0];
+      var setCardBusy = cardBusyHook[1];
+
+      var characterRef = React.useRef(null);
 
       var avatarSrc =
         settings.avatar && String(settings.avatar).trim()
           ? String(settings.avatar).trim()
           : AVATAR_SRC;
-      var fishSize = settings.fishSize;
+      var size = settings.fishSize;
 
       var updateSettings = React.useCallback(function (patch) {
         setSettings(function (previous) {
           var next = Object.assign({}, previous, patch);
+          next.fishSize = Math.max(64, Math.min(200, Number(next.fishSize) || 120));
           saveJSON(BUBBLE_KEY, next);
           return next;
         });
       }, []);
 
-      var initLayout = React.useCallback(function () {
-        var size = clampedSize(loadJSON(SIZE_KEY, defaultSize()));
-        var pos = clampPos(loadJSON(POS_KEY, null) || defaultPos(size), size);
-        return { pos: pos, size: size };
-      }, []);
-
-      var setLayout = React.useCallback(function (next) {
-        layoutRef.current = next;
-        saveJSON(POS_KEY, next.pos);
-        saveJSON(SIZE_KEY, next.size);
-        layoutHook[1](next);
-      }, []);
-
-      var ensureLayout = function () {
-        if (!layoutRef.current) layoutRef.current = initLayout();
-        return layoutRef.current;
-      };
-
-      var schedulePersist = React.useCallback(function () {
-        if (rafRef.current) return;
-        rafRef.current = requestAnimationFrame(function () {
-          rafRef.current = 0;
-          var current = layoutRef.current;
-          if (!current) return;
-          saveJSON(POS_KEY, current.pos);
-          saveJSON(SIZE_KEY, current.size);
-        });
-      }, []);
-
-      // Drag the panel by left/top (expanded view).
-      var startDrag = function (event) {
+      // —— 角色立绘拖动：moved 才移动位置；单击（未拖动）= 开/关设置卡片 ——
+      var startCharacterDrag = function (event) {
         if (event.button !== 0) return;
         event.preventDefault();
-        var current = ensureLayout();
-        var target = sectionRef.current;
+        var target = characterRef.current;
         if (!target) return;
-        var startX = event.clientX;
-        var startY = event.clientY;
-        var startPos = { x: current.pos.x, y: current.pos.y };
-        var moved = false;
-        target.style.left = current.pos.x + "px";
-        target.style.top = current.pos.y + "px";
-        target.style.right = "auto";
-        target.style.bottom = "auto";
-
-        var onMove = function (ev) {
-          var dx = ev.clientX - startX;
-          var dy = ev.clientY - startY;
-          if (!moved && Math.abs(dx) + Math.abs(dy) > 2) moved = true;
-          if (!moved) return;
-          var next = {
-            x: Math.max(0, Math.min(startPos.x + dx, window.innerWidth - 120)),
-            y: Math.max(0, Math.min(startPos.y + dy, window.innerHeight - 48)),
-          };
-          target.style.left = next.x + "px";
-          target.style.top = next.y + "px";
-          layoutRef.current = { pos: next, size: current.size };
-          schedulePersist();
-        };
-        var onUp = function () {
-          window.removeEventListener("mousemove", onMove);
-          window.removeEventListener("mouseup", onUp);
-          if (moved) {
-            var cur = layoutRef.current;
-            layoutHook[1](cur);
-            saveJSON(POS_KEY, cur.pos);
-            saveJSON(SIZE_KEY, cur.size);
-          }
-        };
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
-      };
-
-      // Resize the expanded panel from the bottom-right corner / bottom edge.
-      var startResize = function (event) {
-        if (event.button !== 0 || ui.view !== "panel") return;
-        event.preventDefault();
-        event.stopPropagation();
-        var current = ensureLayout();
-        var target = sectionRef.current;
-        if (!target) return;
-        var startX = event.clientX;
-        var startY = event.clientY;
-        var startW = current.size.width;
-        var startH = current.size.height;
-
-        var onMove = function (ev) {
-          var w = Math.max(MINW, Math.min(startW + (ev.clientX - startX), window.innerWidth - 16));
-          var h = Math.max(MINH, Math.min(startH + (ev.clientY - startY), window.innerHeight - 16));
-          target.style.width = w + "px";
-          target.style.height = h + "px";
-          layoutRef.current = { pos: current.pos, size: { width: w, height: h } };
-          schedulePersist();
-        };
-        var onUp = function () {
-          window.removeEventListener("mousemove", onMove);
-          window.removeEventListener("mouseup", onUp);
-          var cur = layoutRef.current;
-          layoutHook[1](cur);
-          saveJSON(POS_KEY, cur.pos);
-          saveJSON(SIZE_KEY, cur.size);
-        };
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
-      };
-
-      // Compact "fish ball" view: drag to move, click (no move) to expand,
-      // right-click for the settings popover.
-      var startFishDrag = function (event) {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        var target = fishRef.current;
-        if (!target) return;
-        var startPos = fishPos || defaultFishPos(fishSize);
+        var startPos = fishPos || defaultFishPos(size);
         var startX = event.clientX;
         var startY = event.clientY;
         var moved = false;
@@ -381,8 +244,8 @@ window.__ModuleLoader__.load({
           if (!moved && Math.abs(dx) + Math.abs(dy) > 4) moved = true;
           if (!moved) return;
           var next = {
-            x: Math.max(0, Math.min(startPos.x + dx, window.innerWidth - fishSize)),
-            y: Math.max(0, Math.min(startPos.y + dy, window.innerHeight - fishSize)),
+            x: Math.max(0, Math.min(startPos.x + dx, window.innerWidth - size)),
+            y: Math.max(0, Math.min(startPos.y + dy, window.innerHeight - size)),
           };
           target.style.left = next.x + "px";
           target.style.top = next.y + "px";
@@ -391,15 +254,15 @@ window.__ModuleLoader__.load({
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
           if (moved) {
-            var targetRect = fishRef.current ? fishRef.current.getBoundingClientRect() : null;
-            var next = targetRect
-              ? { x: Math.round(targetRect.left), y: Math.round(targetRect.top) }
+            var rect = characterRef.current ? characterRef.current.getBoundingClientRect() : null;
+            var next = rect
+              ? { x: Math.round(rect.left), y: Math.round(rect.top) }
               : { x: startPos.x, y: startPos.y };
             setFishPos(next);
             saveJSON(FISH_POS_KEY, next);
           } else {
-            setUi(function (previous) {
-              return Object.assign({}, previous, { view: "panel" });
+            setCardOpen(function (open) {
+              return !open;
             });
           }
         };
@@ -407,20 +270,24 @@ window.__ModuleLoader__.load({
         window.addEventListener("mouseup", onUp);
       };
 
-      var collapseToFish = function () {
-        setUi(function (previous) {
-          return Object.assign({}, previous, { view: "fish" });
-        });
+      var resetFishPos = function () {
+        setFishPos(null);
+        saveJSON(FISH_POS_KEY, null);
       };
 
-      var openSettings = function () {
-        setSettingsOpen(true);
+      var stopRuntime = function () {
+        setCardBusy(true);
+        request("/voice/runtime/stop", { method: "POST" })
+          .then(function () {})
+          .catch(function () {})
+          .finally(function () {
+            setCardBusy(false);
+          });
       };
 
       var closePopup = function () {
-        setUi({ open: false, sessionId: "", view: "fish" });
-        layoutRef.current = null;
-        setSettingsOpen(false);
+        setUi({ open: false, sessionId: "" });
+        setCardOpen(false);
       };
 
       React.useEffect(function () {
@@ -428,7 +295,6 @@ window.__ModuleLoader__.load({
           setUi({
             open: true,
             sessionId: event.detail && event.detail.sessionId ? String(event.detail.sessionId) : "",
-            view: "fish",
           });
         };
         window.addEventListener(OPEN_EVENT, onOpen);
@@ -437,7 +303,7 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // Live status + subtitles posted from the embedded Playground iframe.
+      // 状态 + 字幕：来自嵌入 Playground iframe 的 postMessage 上报。
       React.useEffect(function () {
         var onMsg = function (event) {
           var data = event && event.data;
@@ -454,10 +320,8 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // DeepSeek balance, served by this plugin's own host route
-      // (`/voice/balance.json`): API-key route first, then the DSH
-      // account-login route, plus a tiny daily ledger for "used today".
-      // Degrades to "hidden" when no credential is available.
+      // 余额：由本插件宿主路由 /voice/balance.json 提供（API key 优先，
+      // 退回 DSH 账号登录态，附当日账本）。拿不到就隐藏这一层。
       React.useEffect(function () {
         if (!ui.open) return;
         var stopped = false;
@@ -483,344 +347,130 @@ window.__ModuleLoader__.load({
         };
       }, [ui.open]);
 
-      React.useEffect(function () {
-        return function () {
-          if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        };
-      }, []);
-
-      var currentLayout =
-        layout || (ui.open && ui.view === "panel" ? ensureLayout() : null);
-
       if (!ui.open) return null;
 
-      var sectionStyle = {
-        position: "absolute",
-        display: ui.view === "panel" ? "flex" : "none",
-        flexDirection: "column",
-        overflow: "hidden",
-        pointerEvents: "auto",
-        background: "var(--dsw-alias-bg-base, #111827)",
-        border: "1px solid var(--dsw-alias-border-l2, #334155)",
-        borderRadius: "8px",
-        boxShadow: "0 18px 48px rgba(0,0,0,.32)",
-      };
+      var fish = fishPos || defaultFishPos(size);
+      var statusKey = STATUS_COLORS[live.status] ? live.status : "idle";
 
-      if (currentLayout) {
-        sectionStyle.left = currentLayout.pos.x + "px";
-        sectionStyle.top = currentLayout.pos.y + "px";
-        sectionStyle.width = currentLayout.size.width + "px";
-        sectionStyle.height = currentLayout.size.height + "px";
-        sectionStyle.right = "auto";
-        sectionStyle.bottom = "auto";
-      } else {
-        sectionStyle.right = "20px";
-        sectionStyle.bottom = "20px";
-        sectionStyle.width = "min(460px, calc(100vw - 32px))";
-        sectionStyle.height = "min(640px, calc(100vh - 40px))";
-      }
-
-      var headerStyle = {
-        flex: "0 0 auto",
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        minHeight: "42px",
-        padding: "8px 10px",
-        borderBottom: "1px solid var(--dsw-alias-border-l2, #334155)",
-        color: "var(--dsw-alias-label-primary, #f8fafc)",
-        fontSize: "13px",
-        fontWeight: "600",
-        cursor: "move",
-        userSelect: "none",
-        touchAction: "none",
-      };
-
-      var stopMouseDown = function (event) {
-        event.stopPropagation();
-      };
-
-      var headerButtons = [
-        React.createElement(
-          "button",
-          {
-            key: "min",
-            type: "button",
-            "aria-label": "折叠成小鱼球",
-            title: "折叠成小鱼球",
-            onClick: function (event) {
-              event.stopPropagation();
-              collapseToFish();
-            },
-            onMouseDown: stopMouseDown,
-            style: {
-              appearance: "none",
-              border: "0",
-              background: "transparent",
-              color: "inherit",
-              cursor: "pointer",
-              fontSize: "14px",
-              lineHeight: "1",
-              padding: "4px 6px",
-            },
+      // —— 角色立绘（大肥鱼）——
+      var character = React.createElement(
+        "div",
+        {
+          key: "character",
+          ref: characterRef,
+          onMouseDown: startCharacterDrag,
+          onContextMenu: function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            setCardOpen(true);
           },
-          "—",
-        ),
+          title: "拖动移动 · 单击/右键 打开设置",
+          style: {
+            position: "absolute",
+            left: fish.x + "px",
+            top: fish.y + "px",
+            width: size + "px",
+            height: size + "px",
+            pointerEvents: "auto",
+            cursor: "grab",
+            userSelect: "none",
+            zIndex: 4,
+          },
+        },
+        React.createElement("img", {
+          src: avatarSrc,
+          alt: "语音伴随",
+          draggable: false,
+          style: {
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            display: "block",
+            pointerEvents: "none",
+            userSelect: "none",
+          },
+        }),
+        React.createElement("span", {
+          "aria-hidden": true,
+          style: {
+            position: "absolute",
+            top: "4%",
+            right: "4%",
+            width: "10px",
+            height: "10px",
+            borderRadius: "50%",
+            background: STATUS_COLORS[statusKey],
+            border: "2px solid #fff",
+            boxShadow: "0 1px 3px rgba(0,0,0,.4)",
+          },
+        }),
         React.createElement(
           "button",
           {
-            key: "gear",
+            id: "dsh-voice-gear",
             type: "button",
             "aria-label": "伴随设置",
-            title: "气泡层 / 头像 / 大小",
+            title: "伴随设置",
+            onMouseDown: function (event) {
+              event.stopPropagation();
+            },
             onClick: function (event) {
               event.stopPropagation();
-              openSettings();
+              setCardOpen(true);
             },
-            onMouseDown: stopMouseDown,
             style: {
-              appearance: "none",
-              border: "0",
-              background: "transparent",
-              color: "inherit",
+              position: "absolute",
+              right: "2%",
+              bottom: "2%",
+              width: "26px",
+              height: "26px",
+              borderRadius: "50%",
+              border: "1px solid #475569",
+              background: "rgba(15,23,42,.85)",
+              color: "#e2e8f0",
+              fontSize: "13px",
+              lineHeight: "24px",
+              textAlign: "center",
               cursor: "pointer",
-              fontSize: "14px",
-              lineHeight: "1",
-              padding: "4px 6px",
+              padding: "0",
+              pointerEvents: "auto",
             },
           },
           "⚙",
         ),
-        React.createElement(
-          "button",
-          {
-            key: "close",
-            type: "button",
-            "aria-label": "关闭语音对话",
-            title: "关闭",
-            onClick: function (event) {
-              event.stopPropagation();
-              closePopup();
-            },
-            onMouseDown: stopMouseDown,
-            style: {
-              appearance: "none",
-              border: "0",
-              background: "transparent",
-              color: "inherit",
-              cursor: "pointer",
-              fontSize: "16px",
-              lineHeight: "1",
-              padding: "4px 6px",
-            },
-          },
-          "x",
-        ),
-      ];
-
-      var children = [
-        React.createElement(
-          "header",
-          {
-            key: "header",
-            style: headerStyle,
-            onMouseDown: startDrag,
-          },
-          React.createElement("img", {
-            key: "whale",
-            src: avatarSrc,
-            alt: "",
-            draggable: false,
-            onMouseDown: stopMouseDown,
-            style: {
-              width: "24px",
-              height: "24px",
-              borderRadius: "50%",
-              objectFit: "cover",
-              flex: "0 0 auto",
-              pointerEvents: "none",
-              userSelect: "none",
-              background: "#1e293b",
-            },
-          }),
-          React.createElement(
-            "span",
-            {
-              key: "title",
-              style: { flex: "1", minWidth: "0", cursor: "default" },
-              onMouseDown: stopMouseDown,
-            },
-            "语音对话",
-          ),
-          headerButtons,
-        ),
-      ];
-
-      // The iframe stays mounted across fish/panel views so the LiveKit
-      // connection (and the agent in the room) keeps running. It is only
-      // hidden visually when the panel is collapsed into the fish ball.
-      children.push(
-        React.createElement("iframe", {
-          key: "frame",
-          title: "语音对话",
-          src: playgroundUrl(ui.sessionId),
-          allow: "microphone; autoplay",
-          referrerPolicy: "no-referrer",
-          style: {
-            flex: "1 1 auto",
-            width: "100%",
-            minHeight: "0",
-            border: "0",
-            background: "#fff",
-            display: ui.view === "panel" ? "block" : "none",
-          },
-        }),
       );
 
-      if (ui.view === "panel") {
-        var grip = React.createElement(
-          "div",
-          {
-            key: "grip",
-            role: "presentation",
-            title: "按住拖动调整大小",
-            onMouseDown: startResize,
-            style: {
-              position: "absolute",
-              right: "0",
-              bottom: "0",
-              width: "28px",
-              height: "28px",
-              cursor: "nwse-resize",
-              zIndex: 4,
-              pointerEvents: "auto",
-              boxSizing: "border-box",
-              borderRight: "3px solid var(--dsw-alias-label-secondary, #64748b)",
-              borderBottom: "3px solid var(--dsw-alias-label-secondary, #64748b)",
-              background:
-                "repeating-linear-gradient(135deg, transparent 0, transparent 4px, var(--dsw-alias-label-secondary, #64748b) 4px, var(--dsw-alias-label-secondary, #64748b) 7px)",
-              backgroundSize: "14px 14px",
-              backgroundRepeat: "no-repeat",
-              backgroundPosition: "right 2px bottom 2px",
-              opacity: 0.95,
-            },
-          },
-          null,
+      // —— 气泡（可勾选的内容层）——
+      var bubbleLines = [];
+      if (settings.showStatus) {
+        bubbleLines.push(
+          (STATUS_LABELS[live.status] || "空闲") + (live.status === "speaking" ? "…" : ""),
         );
-
-        var bottomStrip = React.createElement(
-          "div",
-          {
-            key: "strip",
-            role: "presentation",
-            title: "上下拖动调整高度",
-            onMouseDown: startResize,
-            style: {
-              position: "absolute",
-              left: "0",
-              right: "28px",
-              bottom: "0",
-              height: "8px",
-              cursor: "ns-resize",
-              zIndex: 3,
-              pointerEvents: "auto",
-              borderBottom: "2px solid transparent",
-            },
-          },
-          null,
+      }
+      if (settings.showText && live.text) {
+        bubbleLines.push(live.text.length > 80 ? "…" + live.text.slice(-77) : live.text);
+      }
+      if (settings.showBalance && balance) {
+        bubbleLines.push(
+          "余额 ¥" +
+            fmtMoney(balance.totalBalance) +
+            " · 今日 ¥" +
+            fmtMoney(balance.todayUsage),
         );
-        children.push(grip, bottomStrip);
+      }
+      if (bubbleLines.length === 0 && settings.alwaysBubble) {
+        bubbleLines.push("空闲");
       }
 
-      // —— 小鱼球（compact companion view）——
-      // Rendered at the overlay root level (sibling of the panel section),
-      // because the section itself is display:none in fish view.
-      var rootExtras = [];
-      if (ui.view === "fish") {
-        var fish = fishPos || defaultFishPos(fishSize);
-        var statusKey = STATUS_COLORS[live.status] ? live.status : "idle";
-        var fishEl = React.createElement(
-          "div",
-          {
-            key: "fish",
-            ref: fishRef,
-            onMouseDown: startFishDrag,
-            onContextMenu: function (event) {
-              event.preventDefault();
-              event.stopPropagation();
-              openSettings();
-            },
-            title: "单击展开面板 · 拖动移动 · 右键设置",
-            style: {
-              position: "absolute",
-              left: fish.x + "px",
-              top: fish.y + "px",
-              width: fishSize + "px",
-              height: fishSize + "px",
-              borderRadius: "50%",
-              overflow: "hidden",
-              cursor: "grab",
-              pointerEvents: "auto",
-              border: "2px solid #475569",
-              boxShadow: "0 10px 28px rgba(0,0,0,.5)",
-              background: "#1e293b",
-              zIndex: 3,
-            },
-          },
-          React.createElement("img", {
-            src: avatarSrc,
-            alt: "语音",
-            draggable: false,
-            style: {
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              display: "block",
-              pointerEvents: "none",
-              userSelect: "none",
-            },
-          }),
-          React.createElement("span", {
-            style: {
-              position: "absolute",
-              right: "6%",
-              bottom: "6%",
-              width: "10px",
-              height: "10px",
-              borderRadius: "50%",
-              background: STATUS_COLORS[statusKey],
-              border: "2px solid #fff",
-            },
-          }),
-        );
-        rootExtras.push(fishEl);
+      var BUBBLE_W = 230;
+      var bubbleLeft = fish.x + size / 2 - BUBBLE_W / 2;
+      bubbleLeft = Math.max(8, Math.min(bubbleLeft, window.innerWidth - BUBBLE_W - 8));
+      var bubbleTop = fish.y - 92;
+      if (bubbleTop < 8) bubbleTop = fish.y + size + 10;
 
-        // —— 气泡（可勾选的内容层）——
-        var bubbleLines = [];
-        if (settings.showStatus) {
-          bubbleLines.push(
-            (STATUS_LABELS[live.status] || "空闲") +
-              (live.status === "speaking" ? "…" : ""),
-          );
-        }
-        if (settings.showText && live.text) {
-          bubbleLines.push(live.text.length > 80 ? "…" + live.text.slice(-77) : live.text);
-        }
-        if (settings.showBalance && balance) {
-          bubbleLines.push(
-            "余额 ¥" + fmtMoney(balance.totalBalance) +
-              " · 今日 ¥" + fmtMoney(balance.todayUsage),
-          );
-        }
-        if (bubbleLines.length > 0) {
-          var BUBBLE_W = 220;
-          var bubbleLeft = fish.x + fishSize + 10;
-          if (bubbleLeft + BUBBLE_W > window.innerWidth - 8) {
-            bubbleLeft = Math.max(8, fish.x - BUBBLE_W - 10);
-          }
-          var bubbleTop = Math.max(8, fish.y - 6);
-          rootExtras.push(
-            React.createElement(
+      var bubble =
+        bubbleLines.length > 0
+          ? React.createElement(
               "div",
               {
                 key: "bubble",
@@ -842,86 +492,118 @@ window.__ModuleLoader__.load({
                   pointerEvents: "none",
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
-                  zIndex: 2,
+                  zIndex: 3,
                 },
               },
               bubbleLines.join("\n"),
-            ),
-          );
-        }
-      }
+            )
+          : null;
 
-      // —— 设置浮层 ——
-      if (settingsOpen) {
-        var checkbox = function (key, label) {
-          return React.createElement(
-            "label",
-            {
-              key: key,
-              style: {
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                margin: "6px 0",
-                cursor: "pointer",
-                fontSize: "12px",
-              },
-            },
-            React.createElement("input", {
-              type: "checkbox",
-              checked: Boolean(settings[key]),
-              onChange: function (event) {
-                updateSettings({ [key]: event.target.checked });
-              },
-            }),
-            label,
-          );
-        };
-        var fileButton = React.createElement(
-          "input",
+      // —— 设置卡片（锚定角色，不再固定在屏幕右上角）——
+      var CARD_W = 300;
+      var CARD_H = 430;
+      var cardLeft = fish.x + size + 14;
+      if (cardLeft + CARD_W > window.innerWidth - 8) {
+        cardLeft = Math.max(8, fish.x - CARD_W - 14);
+      }
+      var cardTop = Math.max(8, Math.min(fish.y - 30, window.innerHeight - CARD_H - 8));
+
+      var checkbox = function (key, label) {
+        return React.createElement(
+          "label",
           {
-            key: "file",
-            type: "file",
-            accept: "image/*",
-            style: { display: "none" },
-            id: "dsh-voice-avatar-file",
-            onChange: function (event) {
-              var file = event.target.files && event.target.files[0];
-              if (!file) return;
-              var reader = new FileReader();
-              reader.onload = function () {
-                updateSettings({ avatar: String(reader.result || "") });
-              };
-              reader.readAsDataURL(file);
-              event.target.value = "";
+            key: key,
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              margin: "6px 0",
+              cursor: "pointer",
+              fontSize: "12px",
             },
           },
+          React.createElement("input", {
+            type: "checkbox",
+            checked: Boolean(settings[key]),
+            onChange: function (event) {
+              updateSettings({ [key]: event.target.checked });
+            },
+          }),
+          label,
         );
-        rootExtras.push(
-          React.createElement(
+      };
+
+      var fileInput = React.createElement(
+        "input",
+        {
+          key: "file",
+          type: "file",
+          accept: "image/*",
+          style: { display: "none" },
+          id: "dsh-voice-avatar-file",
+          onChange: function (event) {
+            var file = event.target.files && event.target.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function () {
+              updateSettings({ avatar: String(reader.result || "") });
+            };
+            reader.readAsDataURL(file);
+            event.target.value = "";
+          },
+        },
+      );
+
+      var smallButton = function (label, onClick, disabled) {
+        return React.createElement(
+          "button",
+          {
+            type: "button",
+            disabled: disabled,
+            onClick: onClick,
+            style: {
+              appearance: "none",
+              border: "1px solid #475569",
+              borderRadius: "6px",
+              background: "rgba(30,41,59,.8)",
+              color: "#e2e8f0",
+              cursor: disabled ? "default" : "pointer",
+              opacity: disabled ? 0.55 : 1,
+              fontSize: "12px",
+              padding: "5px 9px",
+            },
+          },
+          label,
+        );
+      };
+
+      var card = cardOpen
+        ? React.createElement(
             "div",
             {
-              key: "settings",
+              key: "card",
               role: "dialog",
               "aria-label": "伴随设置",
               style: {
                 position: "absolute",
-                top: "16px",
-                right: "16px",
-                width: "264px",
-                background: "#0f172a",
+                left: cardLeft + "px",
+                top: cardTop + "px",
+                width: CARD_W + "px",
+                maxWidth: "calc(100vw - 24px)",
+                background: "rgba(15,23,42,.97)",
                 border: "1px solid #334155",
                 borderRadius: "10px",
                 padding: "12px",
-                zIndex: 5,
+                zIndex: 6,
                 pointerEvents: "auto",
                 color: "#e2e8f0",
-                boxShadow: "0 18px 48px rgba(0,0,0,.4)",
+                boxShadow: "0 18px 48px rgba(0,0,0,.45)",
               },
             },
             React.createElement(
               "div",
               {
+                key: "title",
                 style: {
                   display: "flex",
                   justifyContent: "space-between",
@@ -937,7 +619,7 @@ window.__ModuleLoader__.load({
                   type: "button",
                   "aria-label": "关闭设置",
                   onClick: function () {
-                    setSettingsOpen(false);
+                    setCardOpen(false);
                   },
                   style: {
                     appearance: "none",
@@ -952,120 +634,131 @@ window.__ModuleLoader__.load({
                 "x",
               ),
             ),
-            checkbox("showStatus", "气泡显示语音状态（空闲/聆听/思考/播报）"),
-            checkbox("showText", "气泡显示 Agent 实时字幕"),
-            checkbox("showBalance", "气泡显示 DeepSeek 余额 / 今日已用"),
+            React.createElement("div", { key: "grp1", style: { fontSize: "11px", color: "#94a3b8", marginTop: "8px" } }, "气泡内容"),
+            checkbox("showStatus", "显示语音状态（空闲/聆听/思考/播报）"),
+            checkbox("showText", "显示 Agent 实时字幕"),
+            checkbox("showBalance", "显示 DeepSeek 余额 / 今日已用"),
+            checkbox("alwaysBubble", "气泡常显（没有内容时也显示）"),
+            React.createElement("div", { key: "grp2", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "角色大小"),
             React.createElement(
               "div",
               {
                 key: "size",
-                style: { margin: "10px 0 2px", fontSize: "12px" },
+                style: {
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  fontSize: "12px",
+                },
               },
-              "小鱼球大小：",
-              String(fishSize) + "px",
+              "64",
               React.createElement("input", {
                 type: "range",
-                min: "56",
-                max: "120",
-                step: "4",
-                value: String(fishSize),
-                style: { width: "140px", verticalAlign: "middle" },
+                min: "64",
+                max: "200",
+                step: "8",
+                value: String(size),
+                style: { flex: "1" },
                 onChange: function (event) {
                   updateSettings({ fishSize: Number(event.target.value) });
                 },
               }),
+              "200",
+              String(size) + "px",
             ),
+            React.createElement("div", { key: "grp3", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "头像"),
             React.createElement(
               "div",
               {
                 key: "avatar",
-                style: { margin: "8px 0 2px", fontSize: "12px" },
+                style: { display: "flex", alignItems: "center", gap: "8px", margin: "6px 0" },
               },
-              "头像：默认鲸鱼娘，可换成你自己的图",
-              React.createElement(
-                "div",
-                {
-                  style: {
-                    display: "flex",
-                    gap: "6px",
-                    marginTop: "6px",
-                    alignItems: "center",
-                  },
+              React.createElement("img", {
+                src: avatarSrc,
+                alt: "当前头像",
+                style: {
+                  width: "40px",
+                  height: "40px",
+                  objectFit: "contain",
+                  background: "rgba(30,41,59,.6)",
+                  borderRadius: "6px",
+                  flex: "0 0 auto",
                 },
-                React.createElement("img", {
-                  src: avatarSrc,
-                  alt: "当前头像",
-                  style: {
-                    width: "36px",
-                    height: "36px",
-                    borderRadius: "50%",
-                    objectFit: "cover",
-                    background: "#1e293b",
-                    flex: "0 0 auto",
-                  },
-                }),
-                React.createElement(
-                  "button",
-                  {
-                    type: "button",
-                    onClick: function () {
-                      var el = document.getElementById("dsh-voice-avatar-file");
-                      if (el && el.click) el.click();
-                    },
-                    style: {
-                      appearance: "none",
-                      border: "1px solid #475569",
-                      borderRadius: "6px",
-                      background: "#1e293b",
-                      color: "#e2e8f0",
-                      cursor: "pointer",
-                      fontSize: "12px",
-                      padding: "4px 8px",
-                    },
-                  },
-                  "导入图片",
-                ),
-                settings.avatar
-                  ? React.createElement(
-                      "button",
-                      {
-                        type: "button",
-                        onClick: function () {
-                          updateSettings({ avatar: "" });
-                        },
-                        style: {
-                          appearance: "none",
-                          border: "1px solid #475569",
-                          borderRadius: "6px",
-                          background: "transparent",
-                          color: "#94a3b8",
-                          cursor: "pointer",
-                          fontSize: "12px",
-                          padding: "4px 8px",
-                        },
-                      },
-                      "恢复默认",
-                    )
-                  : null,
+              }),
+              smallButton(
+                "导入图片",
+                function () {
+                  var el = document.getElementById("dsh-voice-avatar-file");
+                  if (el && el.click) el.click();
+                },
+                cardBusy,
               ),
-              fileButton,
+              settings.avatar
+                ? smallButton(
+                    "恢复默认",
+                    function () {
+                      updateSettings({ avatar: "" });
+                    },
+                    cardBusy,
+                  )
+                : null,
+              fileInput,
+            ),
+            React.createElement("div", { key: "grp4", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "连接"),
+            React.createElement(
+              "div",
+              {
+                key: "conn",
+                style: { display: "flex", gap: "8px", margin: "6px 0" },
+              },
+              smallButton(cardBusy ? "处理中..." : "断开连接", stopRuntime, cardBusy),
+              smallButton("关闭小鱼", closePopup, cardBusy),
+            ),
+            React.createElement("div", { key: "grp5", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "位置"),
+            React.createElement(
+              "div",
+              {
+                key: "pos",
+                style: { display: "flex", gap: "8px", margin: "6px 0" },
+              },
+              smallButton(
+                "重置到默认位置",
+                function () {
+                  resetFishPos();
+                },
+                cardBusy,
+              ),
             ),
             React.createElement(
               "div",
               {
                 key: "hint",
-                style: {
-                  marginTop: "8px",
-                  fontSize: "11px",
-                  color: "#64748b",
-                  lineHeight: 1.5,
-                },
+                style: { marginTop: "8px", fontSize: "11px", color: "#64748b", lineHeight: 1.5 },
               },
-              "小鱼球位置自动记忆；面板拖动 / 缩放位置同样自动记忆。",
+              "角色位置自动记忆；单击角色或点 ⚙ 打开本卡片；右键角色同样可用。",
             ),
-          ),
-        );
-      }
+          )
+        : null;
+
+      // 隐藏的 iframe 始终挂载：LiveKit 连接和房间里的 agent 保持运行，
+      // 状态与字幕经 postMessage 上报给气泡。
+      var hiddenFrame = React.createElement("iframe", {
+        key: "frame",
+        title: "语音对话",
+        src: playgroundUrl(ui.sessionId),
+        allow: "microphone; autoplay",
+        referrerPolicy: "no-referrer",
+        style: {
+          position: "absolute",
+          width: "1px",
+          height: "1px",
+          border: "0",
+          opacity: 0,
+          pointerEvents: "none",
+          left: "0",
+          top: "0",
+        },
+      });
 
       return React.createElement(
         "div",
@@ -1077,18 +770,10 @@ window.__ModuleLoader__.load({
             pointerEvents: "none",
           },
         },
-        React.createElement(
-          "section",
-          {
-            key: "panel",
-            ref: sectionRef,
-            role: "dialog",
-            "aria-label": "语音对话",
-            style: sectionStyle,
-          },
-          children,
-        ),
-        ...rootExtras,
+        hiddenFrame,
+        character,
+        bubble,
+        card,
       );
     }
 
