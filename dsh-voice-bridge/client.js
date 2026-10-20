@@ -18,7 +18,29 @@ window.__ModuleLoader__.load({
       alwaysBubble: false,
       fishSize: 120,
       avatar: "",
+      snap: true,
+      flip: false,
+      balanceAlert: 0,
+      dailyBudget: 0,
+      roles: [],
     };
+
+    // 设置卡「语音服务」区块可编辑的 .env 白名单键（宿主 /voice/config 提供）
+    var CFG_MODEL_KEYS = [
+      "MIMO_API_KEY",
+      "MIMO_BASE_URL",
+      "LLM_PROVIDER",
+      "LLM_API_KEY",
+      "LLM_BASE_URL",
+      "LLM_MODEL",
+    ];
+    var CFG_PARAM_KEYS = [
+      "VOICE_VAD_MIN_SILENCE",
+      "VOICE_ENDPOINT_MIN_DELAY",
+      "VOICE_ENDPOINT_MAX_DELAY",
+      "VOICE_INTERRUPT_MIN",
+      "VOICE_TTS_CHUNK_LIMIT",
+    ];
 
     function loadJSON(key, fallback) {
       try {
@@ -208,6 +230,14 @@ window.__ModuleLoader__.load({
       var cardBusy = cardBusyHook[0];
       var setCardBusy = cardBusyHook[1];
 
+      // 语音服务配置（.env 白名单键）：卡片打开时从 /voice/config 载入
+      var cfgHook = React.useState({});
+      var cfg = cfgHook[0];
+      var setCfg = cfgHook[1];
+      var cfgMsgHook = React.useState("");
+      var cfgMsg = cfgMsgHook[0];
+      var setCfgMsg = cfgMsgHook[1];
+
       var characterRef = React.useRef(null);
 
       var avatarSrc =
@@ -215,6 +245,78 @@ window.__ModuleLoader__.load({
           ? String(settings.avatar).trim()
           : AVATAR_SRC;
       var size = settings.fishSize;
+
+      // 打开卡片时载入 .env 配置
+      React.useEffect(function () {
+        if (!cardOpen || !ui.open) return;
+        var cancelled = false;
+        request("/voice/config")
+          .then(function (value) {
+            if (!cancelled && value && value.values) setCfg(value.values);
+          })
+          .catch(function () {});
+        return function () {
+          cancelled = true;
+        };
+      }, [cardOpen, ui.open]);
+
+      var applyConfig = function () {
+        setCardBusy(true);
+        setCfgMsg("保存中...");
+        var payload = {};
+        (CFG_MODEL_KEYS.concat(CFG_PARAM_KEYS)).forEach(function (key) {
+          if (cfg[key] !== undefined && cfg[key] !== null) payload[key] = String(cfg[key]);
+        });
+        request("/voice/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values: payload }),
+        })
+          .then(function () {
+            return request("/voice/runtime/restart-worker", { method: "POST" });
+          })
+          .then(function () {
+            setCfgMsg("已保存，语音服务已重启生效");
+          })
+          .catch(function (error) {
+            setCfgMsg("保存失败：" + (error.message || "未知错误"));
+          })
+          .finally(function () {
+            setCardBusy(false);
+          });
+      };
+
+      var addRole = function (file) {
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          var dataUrl = String(reader.result || "");
+          setSettings(function (previous) {
+            var next = Object.assign({}, previous);
+            next.roles = (next.roles || []).concat([
+              { name: String(file.name || "角色").replace(/\.[a-z0-9]+$/i, ""), dataUrl: dataUrl },
+            ]);
+            next.avatar = dataUrl;
+            saveJSON(BUBBLE_KEY, next);
+            return next;
+          });
+        };
+        reader.readAsDataURL(file);
+      };
+
+      var removeRole = function (index) {
+        setSettings(function (previous) {
+          var next = Object.assign({}, previous);
+          next.roles = (next.roles || []).filter(function (_r, i) {
+            return i !== index;
+          });
+          // 若删掉的是当前头像，回退默认
+          var gone = (previous.roles || [])[index];
+          if (gone && previous.avatar === gone.dataUrl) next.avatar = "";
+          saveJSON(BUBBLE_KEY, next);
+          return next;
+        });
+      };
 
       var updateSettings = React.useCallback(function (patch) {
         setSettings(function (previous) {
@@ -258,6 +360,16 @@ window.__ModuleLoader__.load({
             var next = rect
               ? { x: Math.round(rect.left), y: Math.round(rect.top) }
               : { x: startPos.x, y: startPos.y };
+            if (settings.snap) {
+              // 吸附：贴最近的左右 / 上下边（24px 边距）
+              var m = 24;
+              var xs = [m, window.innerWidth - size - m];
+              next.x = Math.abs(next.x - xs[0]) <= Math.abs(next.x - xs[1]) ? xs[0] : xs[1];
+              var ys = [m, window.innerHeight - size - m];
+              next.y = Math.abs(next.y - ys[0]) <= Math.abs(next.y - ys[1]) ? ys[0] : ys[1];
+              target.style.left = next.x + "px";
+              target.style.top = next.y + "px";
+            }
             setFishPos(next);
             saveJSON(FISH_POS_KEY, next);
           } else {
@@ -388,6 +500,7 @@ window.__ModuleLoader__.load({
             display: "block",
             pointerEvents: "none",
             userSelect: "none",
+            transform: settings.flip ? "scaleX(-1)" : "none",
           },
         }),
         React.createElement("span", {
@@ -456,6 +569,17 @@ window.__ModuleLoader__.load({
             fmtMoney(balance.totalBalance) +
             " · 今日 ¥" +
             fmtMoney(balance.todayUsage),
+        );
+      }
+      // 提醒层：余额预警 / 今日预算（独立于 showBalance 开关）
+      if (balance && Number(settings.balanceAlert) > 0 && Number(balance.totalBalance) < Number(settings.balanceAlert)) {
+        bubbleLines.push(
+          "⚠ 余额 ¥" + fmtMoney(balance.totalBalance) + " 低于预警线 ¥" + fmtMoney(settings.balanceAlert),
+        );
+      }
+      if (balance && Number(settings.dailyBudget) > 0 && Number(balance.todayUsage) >= Number(settings.dailyBudget)) {
+        bubbleLines.push(
+          "⚠ 今日已用 ¥" + fmtMoney(balance.todayUsage) + "，已达预算 ¥" + fmtMoney(settings.dailyBudget),
         );
       }
       if (bubbleLines.length === 0 && settings.alwaysBubble) {
@@ -579,6 +703,99 @@ window.__ModuleLoader__.load({
         );
       };
 
+      // .env 配置输入行（语音模型 / 语音参数区块）
+      var inputRow = function (label, key, type) {
+        return React.createElement(
+          "div",
+          {
+            key: key,
+            style: { display: "flex", alignItems: "center", gap: "6px", margin: "4px 0" },
+          },
+          React.createElement(
+            "span",
+            {
+              style: {
+                flex: "0 0 84px",
+                fontSize: "11px",
+                color: "#94a3b8",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              },
+            },
+            label,
+          ),
+          React.createElement("input", {
+            type: type || "text",
+            value: cfg[key] != null ? String(cfg[key]) : "",
+            onChange: function (event) {
+              setCfg(function (previous) {
+                var next = Object.assign({}, previous);
+                next[key] = event.target.value;
+                return next;
+              });
+            },
+            spellCheck: false,
+            style: {
+              flex: "1",
+              minWidth: "0",
+              border: "1px solid #475569",
+              borderRadius: "5px",
+              background: "rgba(30,41,59,.8)",
+              color: "#e2e8f0",
+              fontSize: "11px",
+              padding: "4px 6px",
+              fontFamily: "inherit",
+            },
+          }),
+        );
+      };
+
+      // 本地设置数字行（提醒阈值，存 localStorage，即时生效）
+      var settingRow = function (label, key, type) {
+        return React.createElement(
+          "div",
+          {
+            key: key,
+            style: { display: "flex", alignItems: "center", gap: "6px", margin: "4px 0" },
+          },
+          React.createElement(
+            "span",
+            {
+              style: {
+                flex: "0 0 84px",
+                fontSize: "11px",
+                color: "#94a3b8",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              },
+            },
+            label,
+          ),
+          React.createElement("input", {
+            type: type || "text",
+            value: settings[key] != null ? String(settings[key]) : "",
+            onChange: function (event) {
+              var raw = event.target.value;
+              var value = type === "number" ? Number(raw) || 0 : raw;
+              updateSettings({ [key]: value });
+            },
+            style: {
+              flex: "1",
+              minWidth: "0",
+              border: "1px solid #475569",
+              borderRadius: "5px",
+              background: "rgba(30,41,59,.8)",
+              color: "#e2e8f0",
+              fontSize: "11px",
+              padding: "4px 6px",
+              fontFamily: "inherit",
+            },
+          }),
+        );
+      };
+
       var card = cardOpen
         ? React.createElement(
             "div",
@@ -592,6 +809,8 @@ window.__ModuleLoader__.load({
                 top: cardTop + "px",
                 width: CARD_W + "px",
                 maxWidth: "calc(100vw - 24px)",
+                maxHeight: "calc(100vh - 24px)",
+                overflowY: "auto",
                 background: "rgba(15,23,42,.97)",
                 border: "1px solid #334155",
                 borderRadius: "10px",
@@ -668,7 +887,7 @@ window.__ModuleLoader__.load({
               "200",
               String(size) + "px",
             ),
-            React.createElement("div", { key: "grp3", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "头像"),
+            React.createElement("div", { key: "grp3", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "角色"),
             React.createElement(
               "div",
               {
@@ -706,6 +925,85 @@ window.__ModuleLoader__.load({
                 : null,
               fileInput,
             ),
+            React.createElement(
+              "div",
+              {
+                key: "roles",
+                style: { display: "flex", alignItems: "center", gap: "6px", margin: "6px 0", flexWrap: "wrap" },
+              },
+              (settings.roles || []).map(function (role, i) {
+                var selected = settings.avatar === role.dataUrl;
+                return React.createElement(
+                  "div",
+                  { key: i, style: { position: "relative" } },
+                  React.createElement("img", {
+                    src: role.dataUrl,
+                    alt: role.name,
+                    title: (role.name || "角色") + "（点击选用）",
+                    onClick: function () {
+                      updateSettings({ avatar: role.dataUrl });
+                    },
+                    style: {
+                      width: "36px",
+                      height: "36px",
+                      objectFit: "contain",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      background: "rgba(30,41,59,.6)",
+                      border: selected ? "1px solid #3b82f6" : "1px solid rgba(30,41,59,.6)",
+                    },
+                  }),
+                  React.createElement(
+                    "span",
+                    {
+                      "aria-label": "删除角色",
+                      onClick: function () {
+                        removeRole(i);
+                      },
+                      style: {
+                        position: "absolute",
+                        top: "-4px",
+                        right: "-4px",
+                        width: "14px",
+                        height: "14px",
+                        borderRadius: "50%",
+                        background: "#1e293b",
+                        border: "1px solid #475569",
+                        color: "#f87171",
+                        fontSize: "9px",
+                        lineHeight: "12px",
+                        textAlign: "center",
+                        cursor: "pointer",
+                      },
+                    },
+                    "×",
+                  ),
+                );
+              }),
+              smallButton(
+                "添加角色",
+                function () {
+                  var el = document.getElementById("dsh-voice-role-file");
+                  if (el && el.click) el.click();
+                },
+                cardBusy,
+              ),
+              React.createElement("input", {
+                key: "rolefile",
+                type: "file",
+                accept: "image/*",
+                multiple: true,
+                style: { display: "none" },
+                id: "dsh-voice-role-file",
+                onChange: function (event) {
+                  var files = event.target.files ? Array.prototype.slice.call(event.target.files) : [];
+                  files.forEach(addRole);
+                  event.target.value = "";
+                },
+              }),
+            ),
+            checkbox("snap", "拖拽后吸附到最近边缘"),
+            checkbox("flip", "角色水平翻转（面向左侧）"),
             React.createElement("div", { key: "grp4", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "连接"),
             React.createElement(
               "div",
@@ -715,6 +1013,38 @@ window.__ModuleLoader__.load({
               },
               smallButton(cardBusy ? "处理中..." : "断开连接", stopRuntime, cardBusy),
               smallButton("关闭小鱼", closePopup, cardBusy),
+            ),
+            React.createElement("div", { key: "grp6", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "提醒（气泡警示行）"),
+            settingRow("余额预警（元，0=关）", "balanceAlert", "number"),
+            settingRow("今日预算（元，0=关）", "dailyBudget", "number"),
+            React.createElement("div", { key: "grp7", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "语音模型（.env）"),
+            inputRow("MiMo Key（耳/嘴）", "MIMO_API_KEY"),
+            inputRow("MiMo 地址", "MIMO_BASE_URL"),
+            inputRow("大脑模式", "LLM_PROVIDER"),
+            inputRow("回退 Key", "LLM_API_KEY"),
+            inputRow("回退地址", "LLM_BASE_URL"),
+            inputRow("回退模型", "LLM_MODEL"),
+            React.createElement("div", { key: "grp8", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "语音参数（.env）"),
+            inputRow("静音判定（秒）", "VOICE_VAD_MIN_SILENCE", "number"),
+            inputRow("等待窗起（秒）", "VOICE_ENDPOINT_MIN_DELAY", "number"),
+            inputRow("等待窗止（秒）", "VOICE_ENDPOINT_MAX_DELAY", "number"),
+            inputRow("打断阈值（秒）", "VOICE_INTERRUPT_MIN", "number"),
+            inputRow("TTS 分句字数", "VOICE_TTS_CHUNK_LIMIT", "number"),
+            React.createElement("div", { key: "grp9", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "应用"),
+            React.createElement(
+              "div",
+              {
+                key: "apply",
+                style: { display: "flex", alignItems: "center", gap: "8px", margin: "6px 0", flexWrap: "wrap" },
+              },
+              smallButton(cardBusy ? "处理中..." : "保存并重启语音服务", applyConfig, cardBusy),
+              React.createElement(
+                "span",
+                {
+                  style: { fontSize: "11px", color: cfgMsg ? "#4ade80" : "#64748b", lineHeight: 1.4 },
+                },
+                cfgMsg || "改「语音模型 / 语音参数」后需保存并重启；其余项即时生效。",
+              ),
             ),
             React.createElement("div", { key: "grp5", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "位置"),
             React.createElement(

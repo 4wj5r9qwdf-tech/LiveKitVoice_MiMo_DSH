@@ -21,6 +21,56 @@ const AVATAR_FILE = resolve(
   "voice-avatar.png",
 );
 
+// —— 可经伴随设置卡调整的配置白名单（写到项目根 .env，重启 worker 生效）——
+const ENV_KEYS = [
+  "MIMO_API_KEY",
+  "MIMO_BASE_URL",
+  "LLM_PROVIDER",
+  "LLM_API_KEY",
+  "LLM_BASE_URL",
+  "LLM_MODEL",
+  "VOICE_VAD_MIN_SILENCE",
+  "VOICE_VAD_PREFIX_PADDING",
+  "VOICE_VAD_THRESHOLD",
+  "VOICE_ENDPOINT_MIN_DELAY",
+  "VOICE_ENDPOINT_MAX_DELAY",
+  "VOICE_INTERRUPT_MIN",
+  "VOICE_TTS_CHUNK_LIMIT",
+];
+
+function readEnvValues(file) {
+  const values = {};
+  try {
+    const text = readFileSync(file, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (m && ENV_KEYS.includes(m[1])) values[m[1]] = m[2];
+    }
+  } catch {
+    /* no .env yet */
+  }
+  return values;
+}
+
+function writeEnvValues(file, values) {
+  let text = "";
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    /* create fresh */
+  }
+  const lines = text.split(/\r?\n/);
+  for (const key of ENV_KEYS) {
+    if (!(key in values)) continue;
+    const value = String(values[key] == null ? "" : values[key]);
+    const re = new RegExp("^" + key + "=");
+    const idx = lines.findIndex((l) => re.test(l));
+    if (idx >= 0) lines[idx] = key + "=" + value;
+    else lines.push(key + "=" + value);
+  }
+  writeFileSync(file, lines.join("\n") + "\n");
+}
+
 function defaultRuntimeConfig(config = {}) {
   return {
     projectRoot: resolve(config.projectRoot || "F:/LiveKitVoice"),
@@ -237,6 +287,35 @@ function createRuntimeManager(config) {
     return snapshot();
   };
 
+  // Respawn ONLY the worker (picks up .env / code changes) while keeping
+  // livekit and the playground running. "starting" guards the worker's exit
+  // handler so the intentional kill isn't reported as an error.
+  const restartWorker = async (baseUrl = "") => {
+    if (phase === "starting") return snapshot();
+    phase = "starting";
+    const trackedWorker = children.get("worker");
+    if (trackedWorker) {
+      await stopOne(trackedWorker);
+      children.delete("worker");
+    }
+    if (!(await waitForPort(settings.livekitPort, 250))) {
+      startOne("livekit", settings.livekitServer, ["--config", settings.livekitConfig], settings.projectRoot);
+      await waitForPort(settings.livekitPort, 10_000);
+    }
+    const workerEnv = { ...process.env };
+    if (baseUrl) workerEnv.DSH_VOICE_URL = baseUrl;
+    startOne(
+      "worker",
+      settings.python,
+      [settings.worker, "dev"],
+      settings.projectRoot,
+      { env: workerEnv },
+    );
+    phase = "running";
+    lastError = "";
+    return snapshot();
+  };
+
   const dispose = () => {
     for (const child of children.values()) {
       if (process.platform === "win32" && child.pid) {
@@ -248,7 +327,7 @@ function createRuntimeManager(config) {
     children.clear();
   };
 
-  return { start, stop, snapshot, dispose, settings };
+  return { start, stop, restartWorker, snapshot, dispose, settings };
 }
 
 function sendJson(res, status, value) {
@@ -618,6 +697,61 @@ export function apply(ctx, config) {
         sendJson(res, 200, await fetchDeepseekBalance());
       } catch (error) {
         sendJson(res, 200, { ok: false, error: String((error && error.message) || error) });
+      }
+    },
+  });
+
+  // 伴随设置卡的配置读写：白名单键，写项目根 .env，改完重启 worker 生效。
+  const envFile = resolve(
+    config && config.projectRoot ? config.projectRoot : "F:/LiveKitVoice",
+    ".env",
+  );
+
+  const voiceConfig = ctx.webServer.register({
+    kind: "exact",
+    path: "/voice/config",
+    handler: (req, res) => {
+      if (!requireLocal(req, res)) return;
+      if (req.method === "GET") {
+        sendJson(res, 200, { ok: true, keys: ENV_KEYS, values: readEnvValues(envFile) });
+        return;
+      }
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      readJsonBody(req)
+        .then((body) => {
+          const submitted = (body && body.values) || {};
+          const picked = {};
+          for (const key of ENV_KEYS) {
+            if (key in submitted) picked[key] = submitted[key];
+          }
+          writeEnvValues(envFile, picked);
+          sendJson(res, 200, { ok: true, saved: Object.keys(picked), values: readEnvValues(envFile) });
+        })
+        .catch((error) => {
+          sendJson(res, 400, { error: String((error && error.message) || error) });
+        });
+    },
+  });
+
+  const restartWorkerRoute = ctx.webServer.register({
+    kind: "exact",
+    path: "/voice/runtime/restart-worker",
+    handler: async (req, res) => {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      if (!requireLocal(req, res)) return;
+      const baseUrl =
+        readLoopbackBaseUrl(parseRequestUrl(req).searchParams.get("baseUrl") || "") ||
+        requestLoopbackBaseUrl(req);
+      try {
+        sendJson(res, 200, await runtime.restartWorker(baseUrl));
+      } catch (error) {
+        sendJson(res, 500, { error: error?.message || String(error) });
       }
     },
   });

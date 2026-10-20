@@ -105,6 +105,21 @@ DSH_VOICE_CWD = os.environ.get("DSH_VOICE_CWD", str(Path(__file__).parent))
 MEMORY_FILE = Path(__file__).with_name("memory.json")
 MAX_MEMORY_ITEMS = 200
 AGENT_WORKSPACE = Path(__file__).with_name("agent_workspace")
+
+# —— 语音行为参数（默认值即调校好的推荐值；可被 .env 覆盖，供伴随设置卡调整）——
+def _env_float(name: str, default: float) -> float:
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+VOICE_VAD_MIN_SILENCE = _env_float("VOICE_VAD_MIN_SILENCE", 1.0)
+VOICE_VAD_PREFIX_PADDING = _env_float("VOICE_VAD_PREFIX_PADDING", 0.4)
+VOICE_VAD_THRESHOLD = _env_float("VOICE_VAD_THRESHOLD", 0.5)
+VOICE_ENDPOINT_MIN_DELAY = _env_float("VOICE_ENDPOINT_MIN_DELAY", 1.5)
+VOICE_ENDPOINT_MAX_DELAY = _env_float("VOICE_ENDPOINT_MAX_DELAY", 4.0)
+VOICE_INTERRUPT_MIN = _env_float("VOICE_INTERRUPT_MIN", 1.5)
 MAX_CODE_OUTPUT_CHARS = 12000
 SCRIPT_EXTENSIONS = {
     ".py": ("python", (sys.executable,)),
@@ -526,7 +541,7 @@ def _dsh_session_from_room(room_name: str) -> str | None:
 # MiMo TTS 单次合成的文本上限（按句边界分段，逐段请求再拼接音频）。
 # 过长单次请求会被 TTS 侧截断（实测 ~600 字回复只念出前 ~400 字），
 # 分段后既绕开限制，又让第一句更早开口。
-TTS_CHUNK_LIMIT = 150
+TTS_CHUNK_LIMIT = int(_env_float("VOICE_TTS_CHUNK_LIMIT", 150))
 _TTS_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;…\n])")
 
 
@@ -870,8 +885,9 @@ async def entrypoint(ctx: JobContext) -> None:
         # （约多 1s 才起回复）。
         vad=inference.VAD(
             model="silero",
-            min_silence_duration=1.0,
-            prefix_padding_duration=0.4,
+            activation_threshold=VOICE_VAD_THRESHOLD,
+            min_silence_duration=VOICE_VAD_MIN_SILENCE,
+            prefix_padding_duration=VOICE_VAD_PREFIX_PADDING,
         ),
         turn_handling=TurnHandlingOptions(
             turn_detection="vad",
@@ -879,14 +895,15 @@ async def entrypoint(ctx: JobContext) -> None:
                 # 检测到说完后继续等：用户在 max_delay 内继续说话就并入本轮，
                 # 整段话一次转写。
                 "mode": "fixed",
-                "min_delay": 1.5,
-                "max_delay": 4.0,
+                "min_delay": VOICE_ENDPOINT_MIN_DELAY,
+                "max_delay": VOICE_ENDPOINT_MAX_DELAY,
             },
             interruption={
                 "mode": "vad",
-                # 打断阈值提到 1.5s：单个「嗯/哦/对」这类短附和（通常 <1.2s）
+                # 打断阈值 1.5s：单个「嗯/哦/对」这类短附和（通常 <1.2s）
                 # 不再打断长播报；用户真正要插话（连说 1.5s+）才打断。
-                "min_duration": 1.5,
+                # 可被 .env 的 VOICE_INTERRUPT_MIN 覆盖（伴随设置卡可改）。
+                "min_duration": VOICE_INTERRUPT_MIN,
                 "resume_false_interruption": True,
                 "false_interruption_timeout": 2.0,
                 "backchannel_boundary": (1.0, 1.5),
