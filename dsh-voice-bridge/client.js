@@ -454,14 +454,16 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // DeepSeek balance (served by the installed dsh-whale-widget plugin on
-      // the same DSH host). Degrades to "hidden" when it is not installed.
+      // DeepSeek balance, served by this plugin's own host route
+      // (`/voice/balance.json`): API-key route first, then the DSH
+      // account-login route, plus a tiny daily ledger for "used today".
+      // Degrades to "hidden" when no credential is available.
       React.useEffect(function () {
         if (!ui.open) return;
         var stopped = false;
         var tick = function () {
           try {
-            fetch("/dsh-whale/balance.json", { signal: AbortSignal.timeout(8000) })
+            fetch("/voice/balance.json", { signal: AbortSignal.timeout(25000) })
               .then(function (response) {
                 return response.ok ? response.json() : null;
               })

@@ -1,9 +1,10 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 
 export const name = "dsh-voice-bridge";
 export const inject = ["webServer", "sessionController"];
@@ -357,6 +358,166 @@ export function apply(ctx, config) {
     return true;
   };
 
+  // —— DeepSeek 余额（自 dsh-whale-widget 吞并）：让气泡的余额层不再依赖
+  //    鲸鱼插件。两条取数路：API key 优先（config / 凭据服务 / 环境变量），
+  //    失败退回 DSH 账号登录态（宿主可选服务 deepseekAccount，**绝不写进
+  //    inject**——老宿主没有这个服务，写进 inject 会让整个插件永不 apply）。
+  //    另配一个极简当日账本：今日峰值余额 − 当前余额 = 今日已用（充值会把
+  //    峰值抬高的那部分视为"待核对"，不做鲸鱼插件那套人工校正，属于已知简化）。
+  const BALANCE_CACHE_MS = 60_000;
+  let balanceCache = { at: 0, value: null };
+  const BALANCE_LEDGER_FILE = resolve(
+    process.env.DSH_VOICE_BALANCE_FILE || resolve(process.env.DSH_HOME || resolve(homedir(), ".dsh"), "voice-bridge-balance.json"),
+  );
+
+  function beijingDay() {
+    return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  }
+
+  function readBalanceLedger() {
+    try {
+      const value = JSON.parse(readFileSync(BALANCE_LEDGER_FILE, "utf8"));
+      return value && typeof value === "object" ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeBalanceLedger(ledger) {
+    try {
+      writeFileSync(BALANCE_LEDGER_FILE, JSON.stringify(ledger, null, 2));
+    } catch {
+      /* ledger is best-effort */
+    }
+  }
+
+  async function fetchApiKeyBalance(keyValue) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch("https://api.deepseek.com/user/balance", {
+          headers: { Authorization: "Bearer " + keyValue },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const infos = Array.isArray(data && data.balance_infos) ? data.balance_infos : [];
+          const info =
+            infos.find((x) => x && x.currency === "CNY" && Number(x.total_balance) > 0) ||
+            infos.find((x) => Number(x.total_balance) > 0) ||
+            infos.find((x) => x && x.currency === "CNY") ||
+            infos[0];
+          if (info && Number.isFinite(Number(info.total_balance))) {
+            return {
+              ok: true,
+              totalBalance: Number(info.total_balance),
+              rechargeBalance: Number(info.topped_up_balance) || 0,
+              bonusBalance: Number(info.granted_balance) || 0,
+              currency: String(info.currency || "CNY"),
+              source: "apikey",
+            };
+          }
+          return { ok: false, code: "SHAPE", error: "balance API shape unexpected" };
+        }
+        if (res.status < 500) return { ok: false, code: "HTTP", error: "HTTP " + res.status };
+      } catch {
+        /* transient: retry once */
+      }
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 500));
+    }
+    return { ok: false, code: "HTTP", error: "balance API unreachable" };
+  }
+
+  async function fetchAccountBalance() {
+    let account = null;
+    try {
+      account = typeof ctx.get === "function" ? ctx.get("deepseekAccount") : null;
+    } catch {
+      account = null;
+    }
+    if (!account || typeof account.getBalance !== "function") {
+      return { ok: false, code: "NO_ACCOUNT_SERVICE" };
+    }
+    let result;
+    try {
+      result = await Promise.race([
+        account.getBalance({
+          version: String(process.env.DSH_CLIENT_VERSION || process.env.DSH_VERSION || "unknown"),
+          locale: String(process.env.DSH_LOCALE || "zh_CN"),
+          timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+        }),
+        new Promise((r) => setTimeout(() => r(null), 20_000)),
+      ]);
+    } catch {
+      return { ok: false, code: "ACCOUNT_CALL_FAILED" };
+    }
+    if (!result || result.status !== "ready") return { ok: false, code: "NOT_LOGGED_IN" };
+    const num = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const usable = (list) => (Array.isArray(list) ? list : []).filter((w) => w && num(w.balance) !== null);
+    const normWallets = usable(result.value);
+    const bonusWallets = usable(result.bonusWallets);
+    const all = normWallets.concat(bonusWallets);
+    if (all.length === 0) return { ok: false, code: "NO_WALLETS" };
+    const curOf = (w) => String((w && w.currency) || "CNY").toUpperCase();
+    const nonzero = all.filter((w) => Number(w.balance) > 0);
+    const pick =
+      nonzero.find((w) => curOf(w) === "CNY") || nonzero[0] || all.find((w) => curOf(w) === "CNY") || all[0];
+    const currency = curOf(pick);
+    const sumOf = (list) =>
+      list.filter((w) => curOf(w) === currency).reduce((sum, w) => sum + Number(w.balance), 0);
+    const recharge = Number(sumOf(normWallets).toFixed(6));
+    const bonus = Number(sumOf(bonusWallets).toFixed(6));
+    return { ok: true, totalBalance: Number((recharge + bonus).toFixed(6)), rechargeBalance: recharge, bonusBalance: bonus, currency, source: "account" };
+  }
+
+  async function fetchDeepseekBalance() {
+    if (balanceCache.value && Date.now() - balanceCache.at < BALANCE_CACHE_MS) return balanceCache.value;
+
+    let keyValue = null;
+    if (typeof config.deepseekApiKey === "string" && config.deepseekApiKey.trim()) {
+      keyValue = config.deepseekApiKey.trim();
+    } else {
+      let creds = null;
+      try {
+        creds = typeof ctx.get === "function" ? ctx.get("credentials") : null;
+      } catch {
+        creds = null;
+      }
+      if (creds && typeof creds.resolve === "function") {
+        try {
+          const entry = await creds.resolve("DEEPSEEK_API_KEY");
+          keyValue = entry && entry.value;
+        } catch {
+          /* not configured */
+        }
+      }
+      if (!keyValue) keyValue = process.env.DEEPSEEK_API_KEY || null;
+    }
+
+    let result = keyValue ? await fetchApiKeyBalance(keyValue) : { ok: false, code: "NO_KEY" };
+    if (!result.ok) {
+      const accountResult = await fetchAccountBalance();
+      if (accountResult.ok) result = accountResult;
+    }
+
+    if (result.ok) {
+      balanceCache = { at: Date.now(), value: result };
+      const day = beijingDay();
+      let ledger = readBalanceLedger();
+      if (!ledger || ledger.date !== day || typeof ledger.peak !== "number") {
+        ledger = { date: day, peak: null, todayUsage: 0 };
+      }
+      if (ledger.peak === null || result.totalBalance > ledger.peak) ledger.peak = result.totalBalance;
+      ledger.todayUsage = Number(Math.max(0, ledger.peak - result.totalBalance).toFixed(6));
+      ledger.updatedAt = new Date().toISOString();
+      writeBalanceLedger(ledger);
+      result = Object.assign({}, result, { todayUsage: ledger.todayUsage, updatedAt: ledger.updatedAt });
+    }
+    return result;
+  }
+
   const runtimeStatus = ctx.webServer.register({
     kind: "exact",
     path: "/voice/runtime/status",
@@ -416,6 +577,8 @@ export function apply(ctx, config) {
           "/voice/runtime/status",
           "/voice/runtime/start",
           "/voice/runtime/stop",
+          "/voice/avatar.png",
+          "/voice/balance.json",
         ],
       });
     },
@@ -443,6 +606,19 @@ export function apply(ctx, config) {
         } catch (error) {}
       });
       stream.pipe(res);
+    },
+  });
+
+  const balance = ctx.webServer.register({
+    kind: "exact",
+    path: "/voice/balance.json",
+    handler: async (_req, res) => {
+      if (!requireLocal(_req, res)) return;
+      try {
+        sendJson(res, 200, await fetchDeepseekBalance());
+      } catch (error) {
+        sendJson(res, 200, { ok: false, error: String((error && error.message) || error) });
+      }
     },
   });
 
