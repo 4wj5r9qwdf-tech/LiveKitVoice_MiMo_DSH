@@ -733,6 +733,9 @@ window.__ModuleLoader__.load({
       }
 
       // —— 小鱼球（compact companion view）——
+      // Rendered at the overlay root level (sibling of the panel section),
+      // because the section itself is display:none in fish view.
+      var rootExtras = [];
       if (ui.view === "fish") {
         var fish = fishPos || defaultFishPos(fishSize);
         var statusKey = STATUS_COLORS[live.status] ? live.status : "idle";
@@ -790,7 +793,7 @@ window.__ModuleLoader__.load({
             },
           }),
         );
-        children.push(fishEl);
+        rootExtras.push(fishEl);
 
         // —— 气泡（可勾选的内容层）——
         var bubbleLines = [];
@@ -816,7 +819,7 @@ window.__ModuleLoader__.load({
             bubbleLeft = Math.max(8, fish.x - BUBBLE_W - 10);
           }
           var bubbleTop = Math.max(8, fish.y - 6);
-          children.push(
+          rootExtras.push(
             React.createElement(
               "div",
               {
@@ -894,7 +897,7 @@ window.__ModuleLoader__.load({
             },
           },
         );
-        children.push(
+        rootExtras.push(
           React.createElement(
             "div",
             {
@@ -1085,6 +1088,7 @@ window.__ModuleLoader__.load({
           },
           children,
         ),
+        ...rootExtras,
       );
     }
 
