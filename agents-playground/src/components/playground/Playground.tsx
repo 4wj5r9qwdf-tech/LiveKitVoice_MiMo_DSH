@@ -389,6 +389,8 @@ export default function Playground({
             type: "dsh-voice-status",
             status: agent.state,
             text,
+            // livekit-client 2.x exposes this as a getter property
+            mic: session.room.localParticipant.isMicrophoneEnabled,
           },
           "*",
         );
@@ -400,6 +402,72 @@ export default function Playground({
     const timer = setInterval(post, 1000);
     return () => clearInterval(timer);
   }, [agent.state, messages.messages]);
+
+  // DSH voice companion: report the available microphone devices to the
+  // embedding page (its settings card lists them and can switch input).
+  // Enumerate right after connecting, then refresh periodically so a
+  // plugged-in device shows up without reopening the card.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.parent || window.parent === window) return;
+    if (connectionState !== ConnectionState.Connected) return;
+    let stopped = false;
+    const postDevices = async () => {
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = list
+          .filter((device) => device.kind === "audioinput")
+          .map((device) => ({ id: device.deviceId, label: device.label }));
+        if (!stopped) {
+          window.parent.postMessage(
+            { type: "dsh-voice-devices", devices: audioInputs },
+            "*",
+          );
+        }
+      } catch {
+        /* device enumeration unavailable */
+      }
+    };
+    postDevices();
+    const timer = setInterval(postDevices, 15000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [connectionState]);
+
+  // DSH voice companion: accept microphone commands from the embedding
+  // page via postMessage — device switching and mic on/off.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.parent || window.parent === window) return;
+    const onCommand = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== "dsh-voice-command") return;
+      try {
+        if (data.cmd === "set-mic" && typeof data.deviceId === "string") {
+          // Empty id means "system default"; the exact device constraint
+          // needs LiveKit's "default" special value instead of "".
+          const deviceId = data.deviceId || "default";
+          void session.room
+            .switchActiveDevice("audioinput", deviceId)
+            .catch(() => {});
+        } else if (data.cmd === "mic-on") {
+          void session.room.localParticipant
+            .setMicrophoneEnabled(true)
+            .catch(() => {});
+        } else if (data.cmd === "mic-off") {
+          void session.room.localParticipant
+            .setMicrophoneEnabled(false)
+            .catch(() => {});
+        }
+      } catch {
+        /* room not ready yet */
+      }
+    };
+    window.addEventListener("message", onCommand);
+    return () => window.removeEventListener("message", onCommand);
+  }, [session.room]);
 
   const handleAttributesChange = useCallback(
     (newAttributes: AttributeItem[]) => {

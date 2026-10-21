@@ -914,6 +914,11 @@ window.__ModuleLoader__.load({
         );
       };
 
+      // 音效音量滑杆取值（0-100；localStorage 里非法值回落默认 80）
+      var volValue = isFinite(Number(settings.soundVol))
+        ? Math.max(0, Math.min(100, Number(settings.soundVol)))
+        : 80;
+
       var card = cardOpen
         ? React.createElement(
             "div",
@@ -1123,6 +1128,109 @@ window.__ModuleLoader__.load({
             ),
             checkbox("snap", "拖拽后吸附到最近边缘"),
             checkbox("flip", "角色水平翻转（面向左侧）"),
+            React.createElement("div", { key: "grpSnd", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "音效"),
+            checkbox("soundOn", "点击音效"),
+            checkbox("pressAnim", "按压回弹动画"),
+            React.createElement(
+              "div",
+              {
+                key: "vol",
+                style: {
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  margin: "4px 0",
+                  fontSize: "12px",
+                },
+              },
+              "音量",
+              React.createElement("input", {
+                type: "range",
+                min: "0",
+                max: "100",
+                step: "5",
+                value: String(volValue),
+                style: { flex: "1" },
+                onChange: function (event) {
+                  updateSettings({ soundVol: Number(event.target.value) });
+                },
+              }),
+              volValue + "%",
+            ),
+            React.createElement("div", { key: "grpMic", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "麦克风"),
+            React.createElement(
+              "div",
+              { key: "micSel", style: { display: "flex", gap: "6px", margin: "6px 0" } },
+              React.createElement(
+                "select",
+                {
+                  value: settings.micDevice ? String(settings.micDevice) : "",
+                  onChange: function (event) {
+                    var id = String(event.target.value || "");
+                    updateSettings({ micDevice: id });
+                    sendIframeCmd({ cmd: "set-mic", deviceId: id });
+                  },
+                  style: {
+                    flex: "1",
+                    minWidth: "0",
+                    border: "1px solid #475569",
+                    borderRadius: "5px",
+                    background: "rgba(30,41,59,.8)",
+                    color: "#e2e8f0",
+                    fontSize: "11px",
+                    padding: "4px 6px",
+                    fontFamily: "inherit",
+                  },
+                },
+                React.createElement("option", { value: "" }, "系统默认"),
+                (devices || []).map(function (device, i) {
+                  return React.createElement(
+                    "option",
+                    {
+                      key: device.id || i,
+                      value: device.id ? String(device.id) : "",
+                    },
+                    device.label || "麦克风 " + (i + 1),
+                  );
+                }),
+              ),
+            ),
+            React.createElement(
+              "div",
+              {
+                key: "micTog",
+                style: {
+                  display: "flex",
+                  gap: "6px",
+                  alignItems: "center",
+                  margin: "4px 0",
+                },
+              },
+              smallButton(
+                "开麦",
+                function () {
+                  sendIframeCmd({ cmd: "mic-on" });
+                },
+                cardBusy,
+              ),
+              smallButton(
+                "关麦",
+                function () {
+                  sendIframeCmd({ cmd: "mic-off" });
+                },
+                cardBusy,
+              ),
+              React.createElement(
+                "span",
+                {
+                  style: {
+                    fontSize: "11px",
+                    color: live.mic ? "#4ade80" : "#64748b",
+                  },
+                },
+                live.mic ? "麦克风开" : "麦克风关",
+              ),
+            ),
             React.createElement("div", { key: "grp4", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "连接"),
             React.createElement(
               "div",
@@ -1199,6 +1307,7 @@ window.__ModuleLoader__.load({
         src: playgroundUrl(ui.sessionId),
         allow: "microphone; autoplay",
         referrerPolicy: "no-referrer",
+        ref: iframeRef,
         style: {
           position: "absolute",
           width: "1px",
