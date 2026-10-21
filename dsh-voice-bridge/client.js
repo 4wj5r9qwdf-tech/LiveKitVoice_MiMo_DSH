@@ -23,6 +23,11 @@ window.__ModuleLoader__.load({
       balanceAlert: 0,
       dailyBudget: 0,
       roles: [],
+      soundOn: true,
+      soundVol: 80,
+      pressAnim: true,
+      micDevice: "",
+      showTurnCost: true,
     };
 
     // 设置卡「语音服务」区块可编辑的 .env 白名单键（宿主 /voice/config 提供）
@@ -86,6 +91,22 @@ window.__ModuleLoader__.load({
       var n = Number(value);
       if (!isFinite(n)) return "--";
       return n.toFixed(2);
+    }
+
+    // 点击音效：宿主 /voice/sound.mp3?id=ya1|ya2（按下/松开），预缓存 Audio 实例
+    var soundCache = {};
+    function playSound(id, volPercent) {
+      try {
+        var v = Math.max(0, Math.min(1, Number(volPercent) / 100 || 0.8));
+        var key = id + "_" + Math.round(v * 20);
+        if (!soundCache[key]) soundCache[key] = new Audio("/voice/sound.mp3?id=" + id);
+        var a = soundCache[key];
+        a.volume = v;
+        var p = a.play();
+        if (p && p.catch) p.catch(function () {});
+      } catch (error) {
+        /* audio unavailable */
+      }
     }
 
     var STATUS_LABELS = {
@@ -238,13 +259,73 @@ window.__ModuleLoader__.load({
       var cfgMsg = cfgMsgHook[0];
       var setCfgMsg = cfgMsgHook[1];
 
+      // 每轮消耗（复用 dsh-whale-widget 已实现的记账：/dsh-whale/last-turn.json，
+      // 只统计 DSH 会话里实际发生的那一轮大脑模型用量，不含 MiMo 耳/嘴）
+      var turnHook = React.useState(null);
+      var turn = turnHook[0];
+      var setTurn = turnHook[1];
+
+      var lastTurnSeen = React.useRef(0);
+
       var characterRef = React.useRef(null);
+      var iframeRef = React.useRef(null);
+
+      // 按压回弹 + 音效
+      var pressingHook = React.useState(false);
+      var pressing = pressingHook[0];
+      var setPressing = pressingHook[1];
+
+      // 麦克风设备列表（来自 iframe 内的 enumerateDevices）
+      var devicesHook = React.useState([]);
+      var devices = devicesHook[0];
+      var setDevices = devicesHook[1];
+
+      var sendIframeCmd = function (cmd) {
+        var el = iframeRef.current;
+        if (el && el.contentWindow && el.contentWindow.postMessage) {
+          el.contentWindow.postMessage(Object.assign({ type: "dsh-voice-command" }, cmd), "*");
+        }
+      };
 
       var avatarSrc =
         settings.avatar && String(settings.avatar).trim()
           ? String(settings.avatar).trim()
           : AVATAR_SRC;
       var size = settings.fishSize;
+
+      // 轮询鲸鱼插件的每轮消耗；seq 递增 = 新轮结算完成
+      React.useEffect(function () {
+        if (!ui.open) return;
+        var stopped = false;
+        var tick = function () {
+          try {
+            fetch("/dsh-whale/last-turn.json")
+              .then(function (response) {
+                return response.ok ? response.json() : null;
+              })
+              .then(function (json) {
+                if (stopped || !json || !json.ok) return;
+                if (Number(json.seq) > lastTurnSeen.current) {
+                  lastTurnSeen.current = Number(json.seq);
+                  setTurn({
+                    amount: json.amount,
+                    tokens: json.tokens,
+                    at: Date.now(),
+                  });
+                }
+              })
+              .catch(function () {});
+          } catch (error) {
+            /* whale widget absent */
+          }
+        };
+        tick();
+        var timer = setInterval(tick, 5000);
+        return function () {
+          stopped = true;
+          clearInterval(timer);
+        };
+      }, [ui.open]);
 
       // 打开卡片时载入 .env 配置
       React.useEffect(function () {
@@ -333,6 +414,8 @@ window.__ModuleLoader__.load({
         event.preventDefault();
         var target = characterRef.current;
         if (!target) return;
+        if (settings.soundOn) playSound("ya1", settings.soundVol);
+        setPressing(true);
         var startPos = fishPos || defaultFishPos(size);
         var startX = event.clientX;
         var startY = event.clientY;
@@ -355,6 +438,8 @@ window.__ModuleLoader__.load({
         var onUp = function () {
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
+          setPressing(false);
+          if (settings.soundOn) playSound("ya2", settings.soundVol);
           if (moved) {
             var rect = characterRef.current ? characterRef.current.getBoundingClientRect() : null;
             var next = rect
@@ -415,7 +500,7 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // 状态 + 字幕：来自嵌入 Playground iframe 的 postMessage 上报。
+      // 状态 + 字幕 + 麦克风设备列表：来自嵌入 Playground iframe 的 postMessage 上报。
       React.useEffect(function () {
         var onMsg = function (event) {
           var data = event && event.data;
@@ -423,7 +508,11 @@ window.__ModuleLoader__.load({
             setLive({
               status: String(data.status || ""),
               text: String(data.text || ""),
+              mic: Boolean(data.mic),
             });
+          }
+          if (data && data.type === "dsh-voice-devices" && Array.isArray(data.devices)) {
+            setDevices(data.devices);
           }
         };
         window.addEventListener("message", onMsg);
@@ -500,7 +589,13 @@ window.__ModuleLoader__.load({
             display: "block",
             pointerEvents: "none",
             userSelect: "none",
-            transform: settings.flip ? "scaleX(-1)" : "none",
+            transformOrigin: "50% 100%",
+            transition: settings.pressAnim
+              ? "transform 180ms cubic-bezier(.34,1.56,.64,1)"
+              : "none",
+            transform:
+              (settings.flip ? "scaleX(-1) " : "") +
+              (pressing && settings.pressAnim ? "scale(0.94)" : ""),
           },
         }),
         React.createElement("span", {
@@ -553,37 +648,60 @@ window.__ModuleLoader__.load({
         ),
       );
 
-      // —— 气泡（可勾选的内容层）——
+      // —— 气泡（可勾选的内容层；空闲时自动收起，活动/新轮消耗/警示时展开）——
+      var statusActive = live.status && live.status !== "idle";
+      var turnFresh = Boolean(turn && turn.amount != null && Date.now() - turn.at < 30000);
+      var warnLow =
+        balance &&
+        Number(settings.balanceAlert) > 0 &&
+        Number(balance.totalBalance) < Number(settings.balanceAlert);
+      var warnBudget =
+        balance &&
+        Number(settings.dailyBudget) > 0 &&
+        Number(balance.todayUsage) >= Number(settings.dailyBudget);
+      var bubbleVisible = settings.alwaysBubble || statusActive || turnFresh || warnLow || warnBudget;
+
       var bubbleLines = [];
-      if (settings.showStatus) {
-        bubbleLines.push(
-          (STATUS_LABELS[live.status] || "空闲") + (live.status === "speaking" ? "…" : ""),
-        );
-      }
-      if (settings.showText && live.text) {
-        bubbleLines.push(live.text.length > 80 ? "…" + live.text.slice(-77) : live.text);
-      }
-      if (settings.showBalance && balance) {
-        bubbleLines.push(
-          "余额 ¥" +
-            fmtMoney(balance.totalBalance) +
-            " · 今日 ¥" +
-            fmtMoney(balance.todayUsage),
-        );
-      }
-      // 提醒层：余额预警 / 今日预算（独立于 showBalance 开关）
-      if (balance && Number(settings.balanceAlert) > 0 && Number(balance.totalBalance) < Number(settings.balanceAlert)) {
-        bubbleLines.push(
-          "⚠ 余额 ¥" + fmtMoney(balance.totalBalance) + " 低于预警线 ¥" + fmtMoney(settings.balanceAlert),
-        );
-      }
-      if (balance && Number(settings.dailyBudget) > 0 && Number(balance.todayUsage) >= Number(settings.dailyBudget)) {
-        bubbleLines.push(
-          "⚠ 今日已用 ¥" + fmtMoney(balance.todayUsage) + "，已达预算 ¥" + fmtMoney(settings.dailyBudget),
-        );
-      }
-      if (bubbleLines.length === 0 && settings.alwaysBubble) {
-        bubbleLines.push("空闲");
+      if (bubbleVisible) {
+        if (settings.showStatus && (statusActive || settings.alwaysBubble)) {
+          bubbleLines.push(
+            (STATUS_LABELS[live.status] || "空闲") + (live.status === "speaking" ? "…" : ""),
+          );
+        }
+        if (settings.showText && live.text && (statusActive || turnFresh)) {
+          bubbleLines.push(live.text.length > 80 ? "…" + live.text.slice(-77) : live.text);
+        }
+        if (settings.showBalance && balance) {
+          bubbleLines.push(
+            "余额 ¥" +
+              fmtMoney(balance.totalBalance) +
+              " · 今日 ¥" +
+              fmtMoney(balance.todayUsage),
+          );
+        }
+        // 每轮消耗：复用 dsh-whale-widget 的记账（只统计 DSH 会话的大脑模型用量）
+        if (turnFresh && settings.showTurnCost && turn) {
+          var tokNote =
+            turn.tokens && Number(turn.tokens) > 0
+              ? " · " + Number(turn.tokens).toLocaleString() + " tok"
+              : "";
+          var amtNum = Number(turn.amount) || 0;
+          var amtText =
+            amtNum < 0.01 ? amtNum.toFixed(4) : amtNum < 1 ? amtNum.toFixed(3) : amtNum.toFixed(2);
+          bubbleLines.push("本轮 ¥" + amtText + tokNote);
+        }
+        // 提醒层：余额预警 / 今日预算（独立于 showBalance 开关，触发时气泡强制展开）
+        if (warnLow) {
+          bubbleLines.push(
+            "⚠ 余额 ¥" + fmtMoney(balance.totalBalance) + " 低于预警线 ¥" + fmtMoney(settings.balanceAlert),
+          );
+        }
+        if (warnBudget) {
+          bubbleLines.push(
+            "⚠ 今日已用 ¥" + fmtMoney(balance.todayUsage) + "，已达预算 ¥" + fmtMoney(settings.dailyBudget),
+          );
+        }
+        if (bubbleLines.length === 0) bubbleLines.push("空闲");
       }
 
       var BUBBLE_W = 230;
@@ -859,6 +977,7 @@ window.__ModuleLoader__.load({
             checkbox("showStatus", "显示语音状态（空闲/聆听/思考/播报）"),
             checkbox("showText", "显示 Agent 实时字幕"),
             checkbox("showBalance", "显示 DeepSeek 余额 / 今日已用"),
+            checkbox("showTurnCost", "显示每轮消耗（复用大肥鱼记账）"),
             checkbox("alwaysBubble", "气泡常显（没有内容时也显示）"),
             React.createElement("div", { key: "grp2", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "角色大小"),
             React.createElement(

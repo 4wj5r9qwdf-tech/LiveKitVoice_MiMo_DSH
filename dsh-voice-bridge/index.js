@@ -20,6 +20,10 @@ const AVATAR_FILE = resolve(
   "assets",
   "voice-avatar.png",
 );
+// Click SFX (pressed from dsh-whale-widget's "little yellow duck" preset):
+// GET /voice/sound.mp3?id=ya1|ya2 — loopback only, no token needed.
+const SOUNDS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "assets", "sounds");
+const SOUND_IDS = { ya1: "ya1.mp3", ya2: "ya2.mp3" };
 
 // —— 可经伴随设置卡调整的配置白名单（写到项目根 .env，重启 worker 生效）——
 const ENV_KEYS = [
@@ -657,6 +661,7 @@ export function apply(ctx, config) {
           "/voice/runtime/start",
           "/voice/runtime/stop",
           "/voice/avatar.png",
+          "/voice/sound.mp3",
           "/voice/balance.json",
         ],
       });
@@ -678,6 +683,37 @@ export function apply(ctx, config) {
       res.writeHead(200, {
         "Content-Type": "image/png",
         "Cache-Control": "no-store",
+      });
+      stream.on("error", () => {
+        try {
+          res.end();
+        } catch (error) {}
+      });
+      stream.pipe(res);
+    },
+  });
+
+  const sound = ctx.webServer.register({
+    kind: "exact",
+    path: "/voice/sound.mp3",
+    handler: (req, res) => {
+      if (!requireLocal(req, res)) return;
+      const id = parseRequestUrl(req).searchParams.get("id") || "ya1";
+      const file = SOUND_IDS[id];
+      if (!file) {
+        sendJson(res, 404, { error: "unknown sound id" });
+        return;
+      }
+      let stream;
+      try {
+        stream = createReadStream(resolve(SOUNDS_DIR, file));
+      } catch (error) {
+        sendJson(res, 404, { error: "sound not found" });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "public, max-age=3600",
       });
       stream.on("error", () => {
         try {
