@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
       pressAnim: true,
       micDevice: "",
       showTurnCost: true,
+      bubbleHideSec: 5,
     };
 
     // 设置卡「语音服务」区块可编辑的 .env 白名单键（宿主 /voice/config 提供）
@@ -280,6 +281,13 @@ window.__ModuleLoader__.load({
       var devices = devicesHook[0];
       var setDevices = devicesHook[1];
 
+      // 手动「隐藏本次」气泡：收起后在新一轮消耗结算（seq 递增）或新一轮对话开始
+      // （状态 idle→活动）之前保持隐藏，二者任一发生即恢复显示
+      var dismissedHook = React.useState(false);
+      var dismissed = dismissedHook[0];
+      var setDismissed = dismissedHook[1];
+      var liveStatusRef = React.useRef("");
+
       var sendIframeCmd = function (cmd) {
         var el = iframeRef.current;
         if (el && el.contentWindow && el.contentWindow.postMessage) {
@@ -312,6 +320,8 @@ window.__ModuleLoader__.load({
                     tokens: json.tokens,
                     at: Date.now(),
                   });
+                  // 新一轮消耗结算 ⇒ 解除「隐藏本次」（手动收起只影响上一轮）
+                  setDismissed(false);
                 }
               })
               .catch(function () {});
@@ -505,8 +515,19 @@ window.__ModuleLoader__.load({
         var onMsg = function (event) {
           var data = event && event.data;
           if (data && data.type === STATUS_EVENT) {
+            var newStatus = String(data.status || "");
+            var prevStatus = liveStatusRef.current;
+            if (
+              (prevStatus === "" || prevStatus === "idle") &&
+              newStatus &&
+              newStatus !== "idle"
+            ) {
+              // 新一轮对话开始（聆听/思考/播报）⇒ 解除「隐藏本次」
+              setDismissed(false);
+            }
+            liveStatusRef.current = newStatus;
             setLive({
-              status: String(data.status || ""),
+              status: newStatus,
               text: String(data.text || ""),
               mic: Boolean(data.mic),
             });
@@ -648,9 +669,16 @@ window.__ModuleLoader__.load({
         ),
       );
 
-      // —— 气泡（可勾选的内容层；空闲时自动收起，活动/新轮消耗/警示时展开）——
+      // —— 气泡（可勾选的内容层；对话中显示，结束后停留 bubbleHideSec 秒自动收起）——
       var statusActive = live.status && live.status !== "idle";
-      var turnFresh = Boolean(turn && turn.amount != null && Date.now() - turn.at < 30000);
+      // 对话结束后气泡停留时长（秒；0 = 不自动隐藏）——语义沿用鲸鱼插件
+      // 「每轮消耗泡泡」的自动关闭（其出厂默认 5s，对应 turnCostCloseMs=5000）
+      var hideSec = Math.max(0, Math.round(Number(settings.bubbleHideSec) || 0));
+      var turnFresh = Boolean(
+        turn &&
+          turn.amount != null &&
+          (hideSec === 0 ? true : Date.now() - turn.at < hideSec * 1000),
+      );
       var warnLow =
         balance &&
         Number(settings.balanceAlert) > 0 &&
@@ -659,7 +687,10 @@ window.__ModuleLoader__.load({
         balance &&
         Number(settings.dailyBudget) > 0 &&
         Number(balance.todayUsage) >= Number(settings.dailyBudget);
-      var bubbleVisible = settings.alwaysBubble || statusActive || turnFresh || warnLow || warnBudget;
+      // dismissed = 用户点了气泡右上角 ×（隐藏本次）：轮到新一轮消耗结算或
+      // 新一轮对话开始（idle→活动）才恢复
+      var bubbleVisible =
+        !dismissed && (settings.alwaysBubble || statusActive || turnFresh || warnLow || warnBudget);
 
       var bubbleLines = [];
       if (bubbleVisible) {
@@ -679,16 +710,20 @@ window.__ModuleLoader__.load({
               fmtMoney(balance.todayUsage),
           );
         }
-        // 每轮消耗：复用 dsh-whale-widget 的记账（只统计 DSH 会话的大脑模型用量）
+        // 每轮消耗：抄自 dsh-whale-widget 的「每轮消耗泡泡」——轮询 last-turn.json，
+        // seq 递增（一轮结算完成）时显示「上一轮对话消耗 + ¥ 金额」默认模板
+        // （其第 3 行「今日已用」由上面的余额行覆盖，不重复；token 数取自记账的
+        // tokens 字段，鲸鱼泡泡未展示、按需求补上）
         if (turnFresh && settings.showTurnCost && turn) {
+          var amtNum = Number(turn.amount) || 0;
+          var amtText =
+            amtNum < 0.01 ? amtNum.toFixed(4) : amtNum < 1 ? amtNum.toFixed(3) : amtNum.toFixed(2);
           var tokNote =
             turn.tokens && Number(turn.tokens) > 0
               ? " · " + Number(turn.tokens).toLocaleString() + " tok"
               : "";
-          var amtNum = Number(turn.amount) || 0;
-          var amtText =
-            amtNum < 0.01 ? amtNum.toFixed(4) : amtNum < 1 ? amtNum.toFixed(3) : amtNum.toFixed(2);
-          bubbleLines.push("本轮 ¥" + amtText + tokNote);
+          bubbleLines.push("上一轮对话消耗");
+          bubbleLines.push("¥ " + amtText + tokNote);
         }
         // 提醒层：余额预警 / 今日预算（独立于 showBalance 开关，触发时气泡强制展开）
         if (warnLow) {
@@ -740,6 +775,31 @@ window.__ModuleLoader__.load({
                 },
               },
               bubbleLines.join("\n"),
+              // 手动「隐藏本次」：本轮触发期间保持收起，新一轮消耗结算 /
+              // 新一轮对话开始时自动恢复
+              React.createElement(
+                "span",
+                {
+                  key: "bubble-close",
+                  "aria-label": "隐藏本次气泡",
+                  title: "隐藏本次气泡（下一轮对话再显示）",
+                  onClick: function () {
+                    setDismissed(true);
+                  },
+                  style: {
+                    position: "absolute",
+                    top: "2px",
+                    right: "6px",
+                    fontSize: "13px",
+                    lineHeight: "14px",
+                    color: "#94a3b8",
+                    cursor: "pointer",
+                    pointerEvents: "auto",
+                    userSelect: "none",
+                  },
+                },
+                "×",
+              ),
             )
           : null;
 
@@ -984,6 +1044,7 @@ window.__ModuleLoader__.load({
             checkbox("showBalance", "显示 DeepSeek 余额 / 今日已用"),
             checkbox("showTurnCost", "显示每轮消耗（复用大肥鱼记账）"),
             checkbox("alwaysBubble", "气泡常显（没有内容时也显示）"),
+            settingRow("对话结束后隐藏（秒，0=不自动隐藏）", "bubbleHideSec", "number"),
             React.createElement("div", { key: "grp2", style: { fontSize: "11px", color: "#94a3b8", margin: "10px 0 2px" } }, "角色大小"),
             React.createElement(
               "div",
@@ -1294,7 +1355,8 @@ window.__ModuleLoader__.load({
                 key: "hint",
                 style: { marginTop: "8px", fontSize: "11px", color: "#64748b", lineHeight: 1.5 },
               },
-              "角色位置自动记忆；单击角色或点 ⚙ 打开本卡片；右键角色同样可用。",
+              "角色位置自动记忆；单击角色或点 ⚙ 打开本卡片；右键角色同样可用；" +
+              "点气泡右上角 × 可隐藏本次气泡，下一轮对话再显示。",
             ),
           )
         : null;

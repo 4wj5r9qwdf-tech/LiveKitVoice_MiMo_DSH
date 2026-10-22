@@ -41,18 +41,17 @@ LiveKit 语音 agent（MiMo 耳朵/嘴 + DSH 会话当大脑）+ 一个 DSH 客�
 - hooks：`devices`（麦克风设备列表状态）、`iframeRef`、`sendIframeCmd(cmd)`（已向 ref 发 dsh-voice-command）
 
 ### 尚未完成（下一步 TODO，按序）
-1. **client.js**：`hiddenFrame` 的 iframe 元素加 `ref: iframeRef`（目前 sendIframeCmd 会打空）。
-2. **client.js 卡片**：加「音效」组（勾选 点击音效 / 按压动画 + 音量滑杆 soundVol 0-100）
-   和「麦克风」组（`<select>` 渲染 devices + 开/关按钮，onChange 发 `{cmd:'set-mic', deviceId}` 并
-   `updateSettings({micDevice})`；按钮发 `{cmd:'mic-on'}`/`{cmd:'mic-off'}`）。
-3. **Playground.tsx**：
-   - status emitter 加 `mic: session.room.localParticipant?.isMicrophoneEnabled?.()`；
-   - 上报 `dsh-voice-devices`（enumerateDevices audioinput 列表，连接后 + 定期）；
-   - 监听 `dsh-voice-command`（window message）：`set-mic` → `room.setMicrophoneDeviceId(id)`；
-     `mic-on/mic-off` → `localParticipant.setMicrophoneEnabled(bool)`。
-4. `node --check` 两个 js + `pnpm tsc --noEmit`（agents-playground），提交推送。
-5. 让用户重启 DSH，然后逐项验证：点击音效/回弹、气泡空闲收起、每轮消耗行（需要鲸鱼插件在跑，
-   没有则静默隐藏）、麦克风切换、.env 保存重启 worker。
+
+~~1–5 已于 2026-10-21 晚全部完成~~（`ca15193` companion v3.2：iframe ref、音效/麦克风组、
+Playground mic 状态 + devices 上报 + 命令监听、检查 + 提交推送）。
+
+**2026-10-22 追加（本次会话）**：
+- 气泡行为按用户要求调整：只在对话时显示；新增 `bubbleHideSec` 设置（「对话结束后隐藏（秒，
+  0=不自动隐藏）」，默认 5s，语义抄自鲸鱼 `turnCostCloseMs` 出厂 5s）；气泡右上角 × =
+  手动「隐藏本次」（seq 递增或状态 idle→活动 时自动恢复，抄鲸鱼 `dismissWaitBubble` 语义）。
+- 每轮消耗行抄鲸鱼「每轮消耗泡泡」默认模板：`上一轮对话消耗` + `¥ 金额 · N tok`
+  （token 数来自 last-turn.json 的 tokens 字段；鲸鱼泡泡第 3 行「今日已用」由余额行覆盖，不重复）。
+- 用户确认过：鲸鱼插件的其余设置**不需要**全搬进语音插件，保留刻意的裁剪。
 
 ### 其他事实
 - 麦克风「听不见」事故已定位为用户系统默认设备选错，链路本身没坏。
@@ -61,6 +60,13 @@ LiveKit 语音 agent（MiMo 耳朵/嘴 + DSH 会话当大脑）+ 一个 DSH 客�
 - 鲸鱼插件（dsh-whale-widget）仍在 desktop profile 里装着（每轮消耗数据源依赖它，暂不能卸载）；
   它自己的余额/音效/图库等其余功能没有搬进语音插件（刻意不搬）。
 - 运行时端口：LiveKit 7880（devkey）、playground dev 3000；DSH host 端口随重启变。
+- livekit-client 2.22.4（本机安装版）：切麦克风设备用 `room.switchActiveDevice("audioinput", id)`
+  （`setMicrophoneDeviceId` 在 v2 已不存在）；「系统默认」空 id 要归一化为 `"default"`；
+  `localParticipant.isMicrophoneEnabled` 是 getter 属性不是方法。
+- 鲸鱼插件源码在 `C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-whale-widget\`
+  （客户端逻辑在 `assets\whale-widget.js`，宿主在 `lib\index.js`，记账内核 `lib\accounting.mjs`）；
+  它的「每轮消耗泡泡」= 轮询 `/dsh-whale/last-turn.json`（字段 `seq/turn/amount/tokens/ts`，
+  amount 8 位小数、tokens 为该轮总 token），自动关闭秒数出厂 5s（`turnCostCloseMs`）。
 - `voice_agent.py` 的 VOICE_* 参数默认值即调校过的推荐值（静音 1.0s / 等待 1.5-4.0s /
   打断 1.5s / TTS 分句 150 字），.env 不填就用这些。
 
