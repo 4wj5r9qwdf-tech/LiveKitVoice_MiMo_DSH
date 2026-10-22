@@ -569,6 +569,24 @@ window.__ModuleLoader__.load({
         };
       }, [ui.open]);
 
+      // 兜底渲染节拍：气泡自动隐藏靠渲染时刻的 Date.now() 判定 turnFresh；
+      // 状态上报（1s）和余额（30s）都可能静默，每秒强制渲染一次保证窗口一到就收起
+      var hideTickHook = React.useState(0);
+      var hideTick = hideTickHook[0];
+      var setHideTick = hideTickHook[1];
+      React.useEffect(function () {
+        if (!ui.open) return;
+        var timer = setInterval(function () {
+          setHideTick(function (n) {
+            return n + 1;
+          });
+        }, 1000);
+        return function () {
+          clearInterval(timer);
+        };
+      }, [ui.open]);
+      void hideTick;
+
       if (!ui.open) return null;
 
       var fish = fishPos || defaultFishPos(size);
@@ -670,7 +688,10 @@ window.__ModuleLoader__.load({
       );
 
       // —— 气泡（可勾选的内容层；对话中显示，结束后停留 bubbleHideSec 秒自动收起）——
-      var statusActive = live.status && live.status !== "idle";
+      // 注意：房间连着时 LiveKit agent 状态一直停在 listening（安静等下一句），
+      // 不会回 idle —— 把 listening 算成「活动」会把气泡整场钉死不收（用户实测
+      // 反馈"没有自动隐藏"）。只有 思考/播报 才算对话正在进行。
+      var statusActive = live.status === "thinking" || live.status === "speaking";
       // 对话结束后气泡停留时长（秒；0 = 不自动隐藏）——语义沿用鲸鱼插件
       // 「每轮消耗泡泡」的自动关闭（其出厂默认 5s，对应 turnCostCloseMs=5000）
       var hideSec = Math.max(0, Math.round(Number(settings.bubbleHideSec) || 0));

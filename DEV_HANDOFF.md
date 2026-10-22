@@ -63,6 +63,9 @@ Playground mic 状态 + devices 上报 + 命令监听、检查 + 提交推送）
 - livekit-client 2.22.4（本机安装版）：切麦克风设备用 `room.switchActiveDevice("audioinput", id)`
   （`setMicrophoneDeviceId` 在 v2 已不存在）；「系统默认」空 id 要归一化为 `"default"`；
   `localParticipant.isMicrophoneEnabled` 是 getter 属性不是方法。
+- LiveKit agent 状态：房间连着时状态一直停在 `listening`（安静等下一句话），**不会回
+  `idle`** —— 气泡「对话中」判定只算 `thinking/speaking`（listening 算活动会把气泡整场钉死、
+  不自动隐藏，2026-10-22 用户实测反馈后修）；另加每秒兜底渲染，保证隐藏窗口准点生效。
 - 鲸鱼插件源码在 `C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-whale-widget\`
   （客户端逻辑在 `assets\whale-widget.js`，宿主在 `lib\index.js`，记账内核 `lib\accounting.mjs`）；
   它的「每轮消耗泡泡」= 轮询 `/dsh-whale/last-turn.json`（字段 `seq/turn/amount/tokens/ts`，
