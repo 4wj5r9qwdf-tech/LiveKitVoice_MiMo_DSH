@@ -301,6 +301,10 @@ class MiMoSTT(STT):
 _mimo_http_client: httpx.AsyncClient | None = None
 _mimo_http_lock = None
 
+# /voice/follow SSE 中途断连（DSH 宿主偶发异常关闭 chunked 连接）时的重连韧性
+FOLLOW_MAX_RETRIES = 5
+FOLLOW_RETRY_DELAY_SECONDS = 1.0
+
 
 def _get_mimo_http_client() -> httpx.AsyncClient:
     global _mimo_http_client, _mimo_http_lock
@@ -335,57 +339,100 @@ class _DSHLLMStream(LLMStream):
     async def _run(self) -> None:
         session_id = await self._bridge.ensure_session()
         follow_url = f"{self._bridge.base_url}/voice/follow?sessionId={session_id}"
+        # 韧性：DSH 宿主偶发把 /voice/follow 的 SSE 连接异常掐断（chunked 收尾缺失、
+        # TCP 被直接销毁，httpx 报 "incomplete chunked read"）——2026-10-22 23:43 实测
+        # 一次，直接杀死了 LLM 任务导致整轮 TTS 没声音。prompt 进队之后事件是持久化
+        # 且 gap-free 的，重连 follow 能追上（快照 + 后续事件），所以中途断开就重连续传，
+        # 而不是让整轮回复（含语音）报废。
+        prompt_posted = False
+        retries = 0
         try:
-            async with self._bridge.client.stream(
-                "GET",
-                follow_url,
-                headers=self._bridge.headers,
-            ) as follow:
-                follow.raise_for_status()
-                prompt = await self._bridge.client.post(
-                    f"{self._bridge.base_url}/voice/prompt",
-                    headers=self._bridge.headers,
-                    json={
-                        "sessionId": session_id,
-                        "text": self._bridge.format_prompt(self._text),
-                        "mode": "queue",
-                    },
-                    timeout=30.0,
-                )
-                prompt.raise_for_status()
+            while True:
+                completed = False
+                try:
+                    async with self._bridge.client.stream(
+                        "GET",
+                        follow_url,
+                        headers=self._bridge.headers,
+                    ) as follow:
+                        follow.raise_for_status()
+                        if not prompt_posted:
+                            prompt = await self._bridge.client.post(
+                                f"{self._bridge.base_url}/voice/prompt",
+                                headers=self._bridge.headers,
+                                json={
+                                    "sessionId": session_id,
+                                    "text": self._bridge.format_prompt(self._text),
+                                    "mode": "queue",
+                                },
+                                timeout=30.0,
+                            )
+                            prompt.raise_for_status()
+                            prompt_posted = True
 
-                async for line in follow.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    try:
-                        payload = json.loads(line[5:].strip())
-                    except json.JSONDecodeError:
-                        continue
-                    frame = payload.get("frame") or {}
-                    if (
-                        payload.get("type") == "event"
-                        and (payload.get("event") or {}).get("type") == "turn/end"
-                    ):
-                        break
-                    if frame.get("type") != "chunk":
-                        continue
-                    chunk = frame.get("chunk") or {}
-                    if chunk.get("type") != "text-delta":
-                        continue
-                    text = chunk.get("text")
-                    if not isinstance(text, str) or not text:
-                        continue
-                    self._event_ch.send_nowait(
-                        ChatChunk(
-                            id=uuid.uuid4().hex,
-                            delta=ChoiceDelta(role="assistant", content=text),
+                        async for line in follow.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            try:
+                                payload = json.loads(line[5:].strip())
+                            except json.JSONDecodeError:
+                                continue
+                            frame = payload.get("frame") or {}
+                            if (
+                                payload.get("type") == "event"
+                                and (payload.get("event") or {}).get("type") == "turn/end"
+                            ):
+                                completed = True
+                                break
+                            if frame.get("type") != "chunk":
+                                continue
+                            chunk = frame.get("chunk") or {}
+                            if chunk.get("type") != "text-delta":
+                                continue
+                            text = chunk.get("text")
+                            if not isinstance(text, str) or not text:
+                                continue
+                            self._event_ch.send_nowait(
+                                ChatChunk(
+                                    id=uuid.uuid4().hex,
+                                    delta=ChoiceDelta(role="assistant", content=text),
+                                )
+                            )
+                    # 服务端干净关流：prompt 已发出时视为本轮内容已取完（即使没等到
+                    # turn/end 帧），正常收尾，不报错
+                    completed = completed or prompt_posted
+                except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                    # 中途断连（含 "incomplete chunked read"）：已进队的 prompt 不重发
+                    # （避免重复一轮），重开 follow 续传
+                    if prompt_posted and retries < FOLLOW_MAX_RETRIES:
+                        retries += 1
+                        logger.warning(
+                            "DSH voice follow stream dropped (%s); reconnecting "
+                            "(attempt %d/%d)",
+                            exc,
+                            retries,
+                            FOLLOW_MAX_RETRIES,
                         )
-                    )
-        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-            raise APIError(
-                f"DSH voice bridge request failed: {exc}",
-                retryable=False,
-            ) from exc
+                        await asyncio.sleep(FOLLOW_RETRY_DELAY_SECONDS)
+                        continue
+                    if not prompt_posted and retries < FOLLOW_MAX_RETRIES:
+                        # 连 prompt 都还没进队：整条重来（GET + POST）
+                        retries += 1
+                        logger.warning(
+                            "DSH voice follow open failed (%s); retrying "
+                            "(attempt %d/%d)",
+                            exc,
+                            retries,
+                            FOLLOW_MAX_RETRIES,
+                        )
+                        await asyncio.sleep(FOLLOW_RETRY_DELAY_SECONDS)
+                        continue
+                    raise APIError(
+                        f"DSH voice bridge request failed: {exc}",
+                        retryable=False,
+                    ) from exc
+                if completed:
+                    return
         finally:
             self._finished = True
 
